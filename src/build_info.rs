@@ -1,5 +1,7 @@
+#[allow(dead_code)] // Used in About dialog (Phase 4)
 pub struct BuildInfo;
 
+#[allow(dead_code)]
 impl BuildInfo {
     pub fn version() -> &'static str {
         env!("CARGO_PKG_VERSION")

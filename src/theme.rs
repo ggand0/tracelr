@@ -1,6 +1,7 @@
 use eframe::egui;
 
 /// Centralized color theme for all custom UI elements.
+#[allow(dead_code)] // fields used in settings/about modals (Phase 4)
 pub struct UiTheme {
     pub accent: egui::Color32,
     pub backdrop: egui::Color32,

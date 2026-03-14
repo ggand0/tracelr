@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 /// Parsed LeRobot v2.1 dataset metadata.
+#[allow(dead_code)] // tasks used by annotation export
 pub(crate) struct LeRobotDataset {
     pub root: PathBuf,
     pub info: DatasetInfo,
@@ -12,6 +13,7 @@ pub(crate) struct LeRobotDataset {
     pub tasks: Vec<TaskMeta>,
 }
 
+#[allow(dead_code)] // metadata fields used in info panel expansions
 pub(crate) struct DatasetInfo {
     pub fps: u32,
     pub total_episodes: usize,
@@ -29,6 +31,7 @@ pub(crate) struct EpisodeMeta {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // fields used by annotation export
 pub(crate) struct TaskMeta {
     pub task_index: usize,
     pub task: String,
@@ -184,6 +187,7 @@ impl LeRobotDataset {
     }
 
     /// Duration of an episode in seconds.
+    #[allow(dead_code)]
     pub fn episode_duration(&self, episode_index: usize) -> f64 {
         self.episodes
             .get(episode_index)

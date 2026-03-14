@@ -13,6 +13,7 @@ fn ensure_ffmpeg_init() {
 }
 
 /// Result of decoding a single frame for the episode cache.
+#[allow(dead_code)] // Used by EpisodeCache (Phase 2)
 pub(crate) struct DecodeResult {
     pub episode_index: usize,
     pub image: Option<egui::ColorImage>,
@@ -161,6 +162,7 @@ fn frame_to_color_image(
 }
 
 /// Decode middle frame with timing info, for use in background threads.
+#[allow(dead_code)] // Used by EpisodeCache (Phase 2)
 pub(crate) fn decode_middle_frame_timed(
     video_path: &Path,
     episode_index: usize,
