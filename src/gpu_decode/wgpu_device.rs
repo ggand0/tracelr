@@ -8,6 +8,34 @@
 
 use ash::vk;
 use std::ffi::CStr;
+use std::sync::{Arc, Mutex, OnceLock};
+
+/// Global shared GPU state, set once at app startup.
+/// Background threads can clone the Arc to access the shared Vulkan device.
+static SHARED_GPU: OnceLock<Arc<SharedGpuState>> = OnceLock::new();
+
+/// Vulkan handles shared between eframe (graphics) and the AV1 decoder (video decode).
+pub struct SharedGpuState {
+    pub entry: ash::Entry,
+    pub ash_instance: ash::Instance,
+    pub ash_device: ash::Device,
+    pub physical_device: vk::PhysicalDevice,
+    pub video_queue_family: u32,
+}
+
+// ash::Instance and ash::Device are internally Arc-based, safe to share across threads
+unsafe impl Send for SharedGpuState {}
+unsafe impl Sync for SharedGpuState {}
+
+/// Store the shared GPU state (called once from main).
+pub fn set_shared_gpu(state: SharedGpuState) {
+    SHARED_GPU.set(Arc::new(state)).ok();
+}
+
+/// Get a reference to the shared GPU state (called from background threads).
+pub fn get_shared_gpu() -> Option<Arc<SharedGpuState>> {
+    SHARED_GPU.get().cloned()
+}
 
 /// Create a wgpu setup with a Vulkan device that supports both graphics
 /// rendering and AV1 video decode. Returns the components needed for
@@ -19,6 +47,8 @@ pub struct GpuSetup {
     pub wgpu_queue: wgpu::Queue,
     /// Video decode queue family index (separate from graphics queue)
     pub video_queue_family: u32,
+    /// The raw ash entry (Vulkan loader)
+    pub entry: ash::Entry,
     /// The raw ash device (shared with wgpu)
     pub ash_device: ash::Device,
     /// The raw ash instance
@@ -202,6 +232,7 @@ impl GpuSetup {
             wgpu_device,
             wgpu_queue,
             video_queue_family: video_decode_family.unwrap_or(0),
+            entry,
             ash_device,
             ash_instance: instance,
             physical_device,

@@ -44,6 +44,17 @@ fn main() -> eframe::Result {
     };
 
     if let Some(setup) = wgpu_setup {
+        // Store shared GPU state for background decode threads
+        gpu_decode::wgpu_device::set_shared_gpu(
+            gpu_decode::wgpu_device::SharedGpuState {
+                entry: setup.entry,
+                ash_instance: setup.ash_instance,
+                ash_device: setup.ash_device,
+                physical_device: setup.physical_device,
+                video_queue_family: setup.video_queue_family,
+            },
+        );
+
         options.wgpu_options.wgpu_setup = egui_wgpu::WgpuSetup::Existing(
             egui_wgpu::WgpuSetupExisting {
                 instance: setup.wgpu_instance,
@@ -52,8 +63,6 @@ fn main() -> eframe::Result {
                 queue: setup.wgpu_queue,
             },
         );
-        // TODO: store setup.ash_device, setup.video_queue_family etc.
-        // for the AV1 decoder to use
     }
 
     eframe::run_native(

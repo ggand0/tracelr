@@ -197,6 +197,9 @@ pub struct AV1Decoder {
     width: u32,
     height: u32,
     frame_count: u64,
+
+    // Whether we own the Vulkan instance/device (false when using shared from GpuSetup)
+    owns_device: bool,
 }
 
 impl AV1Decoder {
@@ -528,6 +531,217 @@ impl AV1Decoder {
             width,
             height,
             frame_count: 0,
+            owns_device: true,
+        })
+    }
+
+    /// Create an AV1 decoder using an existing shared Vulkan device (from GpuSetup).
+    /// The device must have been created with video decode extensions and queue.
+    pub fn from_shared(
+        entry: ash::Entry,
+        instance: ash::Instance,
+        device: ash::Device,
+        physical_device: vk::PhysicalDevice,
+        video_queue_family: u32,
+        seq: &SequenceHeader,
+    ) -> Result<Self, VulkanDecoderError> {
+        let width = seq.max_frame_width_minus_1 as u32 + 1;
+        let height = seq.max_frame_height_minus_1 as u32 + 1;
+
+        log::info!("Creating shared AV1 Vulkan decoder for {}x{}", width, height);
+
+        let video_decode_queue = unsafe { device.get_device_queue(video_queue_family, 0) };
+
+        // Find a transfer queue
+        let queue_families =
+            unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
+        let transfer_queue_family = queue_families
+            .iter()
+            .enumerate()
+            .find(|(_, props)| props.queue_flags.contains(vk::QueueFlags::TRANSFER))
+            .map(|(i, _)| i as u32)
+            .unwrap_or(video_queue_family);
+        let transfer_queue = unsafe { device.get_device_queue(transfer_queue_family, 0) };
+
+        let video_queue_fn = ash::khr::video_queue::Device::new(&instance, &device);
+
+        // Build AV1 profile info (reused for session + images + buffers)
+        let mut av1_profile_info = vk::VideoDecodeAV1ProfileInfoKHR::default()
+            .std_profile(vk::native::StdVideoAV1Profile_STD_VIDEO_AV1_PROFILE_MAIN)
+            .film_grain_support(false);
+        let mut decode_usage = vk::VideoDecodeUsageInfoKHR::default()
+            .video_usage_hints(vk::VideoDecodeUsageFlagsKHR::DEFAULT);
+        let video_profile = vk::VideoProfileInfoKHR::default()
+            .video_codec_operation(vk::VideoCodecOperationFlagsKHR::DECODE_AV1)
+            .chroma_subsampling(vk::VideoChromaSubsamplingFlagsKHR::TYPE_420)
+            .luma_bit_depth(vk::VideoComponentBitDepthFlagsKHR::TYPE_8)
+            .chroma_bit_depth(vk::VideoComponentBitDepthFlagsKHR::TYPE_8)
+            .push_next(&mut av1_profile_info)
+            .push_next(&mut decode_usage);
+
+        let picture_format = vk::Format::G8_B8R8_2PLANE_420_UNORM;
+
+        let std_header_version = vk::ExtensionProperties {
+            extension_name: {
+                let mut name = [0i8; 256];
+                let src = b"VK_STD_vulkan_video_codec_av1_decode\0";
+                for (i, &b) in src.iter().enumerate() {
+                    name[i] = b as i8;
+                }
+                name
+            },
+            spec_version: vk::make_api_version(0, 1, 0, 0),
+        };
+
+        let session_create = vk::VideoSessionCreateInfoKHR::default()
+            .queue_family_index(video_queue_family)
+            .video_profile(&video_profile)
+            .picture_format(picture_format)
+            .max_coded_extent(vk::Extent2D { width, height })
+            .reference_picture_format(picture_format)
+            .max_dpb_slots(8)
+            .max_active_reference_pictures(7)
+            .std_header_version(&std_header_version);
+
+        let mut video_session_handle = vk::VideoSessionKHR::null();
+        let result = unsafe {
+            (video_queue_fn.fp().create_video_session_khr)(
+                device.handle(),
+                &session_create,
+                std::ptr::null(),
+                &mut video_session_handle,
+            )
+        };
+        if result != vk::Result::SUCCESS {
+            return Err(VulkanDecoderError::SessionCreationFailed(format!(
+                "vkCreateVideoSessionKHR failed: {:?}",
+                result
+            )));
+        }
+        log::info!("Created AV1 video session (shared device)");
+
+        // Bind memory
+        let mut mem_req_count = 0u32;
+        unsafe {
+            let _ = (video_queue_fn.fp().get_video_session_memory_requirements_khr)(
+                device.handle(), video_session_handle, &mut mem_req_count, std::ptr::null_mut(),
+            );
+        }
+        let mut mem_reqs = vec![vk::VideoSessionMemoryRequirementsKHR::default(); mem_req_count as usize];
+        unsafe {
+            let _ = (video_queue_fn.fp().get_video_session_memory_requirements_khr)(
+                device.handle(), video_session_handle, &mut mem_req_count, mem_reqs.as_mut_ptr(),
+            );
+        }
+        let mem_props = unsafe { instance.get_physical_device_memory_properties(physical_device) };
+        let mut session_memory = Vec::new();
+        let mut bind_infos = Vec::new();
+        for req in &mem_reqs {
+            let mem_type = find_memory_type(&mem_props, req.memory_requirements.memory_type_bits, vk::MemoryPropertyFlags::DEVICE_LOCAL)
+                .ok_or_else(|| VulkanDecoderError::SessionCreationFailed("No memory type".into()))?;
+            let alloc = vk::MemoryAllocateInfo::default()
+                .allocation_size(req.memory_requirements.size)
+                .memory_type_index(mem_type);
+            let memory = unsafe { device.allocate_memory(&alloc, None)? };
+            session_memory.push(memory);
+            bind_infos.push(vk::BindVideoSessionMemoryInfoKHR::default()
+                .memory_bind_index(req.memory_bind_index)
+                .memory(memory)
+                .memory_offset(0)
+                .memory_size(req.memory_requirements.size));
+        }
+        unsafe {
+            let result = (video_queue_fn.fp().bind_video_session_memory_khr)(
+                device.handle(), video_session_handle, bind_infos.len() as u32, bind_infos.as_ptr(),
+            );
+            if result != vk::Result::SUCCESS {
+                return Err(VulkanDecoderError::SessionCreationFailed(format!("bind memory: {:?}", result)));
+            }
+        }
+
+        // Session parameters
+        let std_seq_owned = seq_header_to_std_owned(seq);
+        let mut av1_params = vk::VideoDecodeAV1SessionParametersCreateInfoKHR::default()
+            .std_sequence_header(&std_seq_owned.header);
+        let params_create = vk::VideoSessionParametersCreateInfoKHR::default()
+            .video_session(video_session_handle)
+            .push_next(&mut av1_params);
+        let mut session_params = vk::VideoSessionParametersKHR::null();
+        let result = unsafe {
+            (video_queue_fn.fp().create_video_session_parameters_khr)(
+                device.handle(), &params_create, std::ptr::null(), &mut session_params,
+            )
+        };
+        if result != vk::Result::SUCCESS {
+            return Err(VulkanDecoderError::SessionCreationFailed(format!("session params: {:?}", result)));
+        }
+
+        // DPB + output + bitstream + staging + command pool (same as new())
+        let mut pl = vk::VideoProfileListInfoKHR::default()
+            .profiles(std::slice::from_ref(&video_profile));
+        let (dpb_images, dpb_views, dpb_memory) =
+            allocate_dpb_images(&device, &mem_props, &mut pl, width, height, 8)?;
+        let (out_img, out_view, out_mem) =
+            allocate_single_image(&device, &mem_props, &mut pl, width, height)?;
+        let bitstream_capacity = 4 * 1024 * 1024;
+        let (bitstream_buffer, bitstream_memory) =
+            allocate_bitstream_buffer(&device, &mem_props, &mut pl, bitstream_capacity)?;
+
+        let staging_capacity = (width * height * 3 / 2) as usize;
+        let staging_create = vk::BufferCreateInfo::default()
+            .size(staging_capacity as u64)
+            .usage(vk::BufferUsageFlags::TRANSFER_DST)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+        let staging_buffer = unsafe { device.create_buffer(&staging_create, None)? };
+        let staging_req = unsafe { device.get_buffer_memory_requirements(staging_buffer) };
+        let staging_mem_type = find_memory_type(&mem_props, staging_req.memory_type_bits,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT)
+            .ok_or_else(|| VulkanDecoderError::SessionCreationFailed("No staging memory".into()))?;
+        let staging_memory = unsafe { device.allocate_memory(
+            &vk::MemoryAllocateInfo::default().allocation_size(staging_req.size).memory_type_index(staging_mem_type), None)? };
+        unsafe { device.bind_buffer_memory(staging_buffer, staging_memory, 0)? };
+
+        let pool_create = vk::CommandPoolCreateInfo::default()
+            .queue_family_index(video_queue_family)
+            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
+        let command_pool = unsafe { device.create_command_pool(&pool_create, None)? };
+
+        log::info!("Shared AV1 decoder fully initialized");
+
+        Ok(Self {
+            _entry: entry,
+            instance,
+            device,
+            physical_device,
+            video_decode_queue,
+            video_queue_family,
+            transfer_queue,
+            transfer_queue_family,
+            video_queue_fn,
+            video_session: video_session_handle,
+            session_params,
+            session_memory,
+            dpb_images,
+            dpb_views,
+            dpb_memory,
+            dpb_slot_active: [false; 8],
+            vbi_to_dpb: [-1; 8],
+            vbi_order_hint: [0; 8],
+            output_image: out_img,
+            output_view: out_view,
+            output_memory: out_mem,
+            bitstream_buffer,
+            bitstream_memory,
+            bitstream_capacity,
+            staging_buffer,
+            staging_memory,
+            staging_capacity,
+            command_pool,
+            sequence_header: seq.clone(),
+            width,
+            height,
+            frame_count: 0,
+            owns_device: false,
         })
     }
 
@@ -832,13 +1046,23 @@ impl AV1Decoder {
                     .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
             )?;
 
+            log::debug!(
+                "decode_frame: frame_count={}, type={:?}, is_intra={}, num_refs={}, dst_slot={}",
+                self.frame_count, fh.frame_type, fh.is_intra_frame, num_refs, dst_slot
+            );
+
             // Begin video coding
             let begin_info = vk::VideoBeginCodingInfoKHR::default()
                 .video_session(self.video_session)
                 .video_session_parameters(self.session_params)
                 .reference_slots(&reference_slots);
 
+            // Ensure ALL device work is complete (including wgpu's graphics queue)
+            self.device.device_wait_idle()?;
+
+            log::debug!("  calling cmd_begin_video_coding_khr");
             (self.video_queue_fn.fp().cmd_begin_video_coding_khr)(cmd, &begin_info);
+            log::debug!("  cmd_begin_video_coding_khr done");
 
             // Reset DPB for key frames
             if fh.frame_type == av1_obu::FrameType::KeyFrame {
@@ -848,15 +1072,18 @@ impl AV1Decoder {
             }
 
             // Decode
+            log::debug!("  calling cmd_decode_video_khr");
             let decode_fn = ash::khr::video_decode_queue::Device::new(
                 &self.instance,
                 &self.device,
             );
             (decode_fn.fp().cmd_decode_video_khr)(cmd, &decode_info);
+            log::debug!("  cmd_decode_video_khr done");
 
             // End video coding
             let end_info = vk::VideoEndCodingInfoKHR::default();
             (self.video_queue_fn.fp().cmd_end_video_coding_khr)(cmd, &end_info);
+            log::debug!("  cmd_end + end_command_buffer");
 
             self.device.end_command_buffer(cmd)?;
 
@@ -1153,8 +1380,10 @@ impl Drop for AV1Decoder {
                 self.device.free_memory(*mem, None);
             }
 
-            self.device.destroy_device(None);
-            self.instance.destroy_instance(None);
+            if self.owns_device {
+                self.device.destroy_device(None);
+                self.instance.destroy_instance(None);
+            }
         }
     }
 }

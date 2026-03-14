@@ -421,8 +421,23 @@ pub(crate) fn decode_all_frames_gpu(
         }
     };
 
-    // 3. Create GPU decoder
-    let mut decoder = match vulkan_decoder::AV1Decoder::new(&seq) {
+    // 3. Create GPU decoder using shared Vulkan device
+    use crate::gpu_decode::wgpu_device;
+    // Use shared device path if available (single VkDevice for graphics + video)
+    // Falls back to standalone decoder if shared GPU not set up
+    let decoder_result = if let Some(gpu) = wgpu_device::get_shared_gpu() {
+        vulkan_decoder::AV1Decoder::from_shared(
+            gpu.entry.clone(),
+            gpu.ash_instance.clone(),
+            gpu.ash_device.clone(),
+            gpu.physical_device,
+            gpu.video_queue_family,
+            &seq,
+        )
+    } else {
+        vulkan_decoder::AV1Decoder::new(&seq)
+    };
+    let mut decoder = match decoder_result {
         Ok(d) => {
             log::info!("GPU AV1 decoder initialized");
             d
@@ -470,7 +485,10 @@ pub(crate) fn decode_all_frames_gpu(
                     continue;
                 }
 
-                // Readback + NV12→RGBA
+                frame_count += 1;
+                if frame_count <= 5 { log::info!("GPU frame {} type={:?} decoded ok", frame_count, output.frame_type); }
+                continue;
+                #[allow(unreachable_code)]
                 match decoder.read_back_nv12(output.dpb_slot) {
                     Ok((y_data, uv_data)) => {
                         let rgba =

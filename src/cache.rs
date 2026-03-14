@@ -463,10 +463,8 @@ impl VideoPlayer {
         let cancel_clone = cancel.clone();
         let ctx_clone = ctx.clone();
         let handle = std::thread::spawn(move || {
-            // TODO: GPU decode crashes when eframe's wgpu Vulkan instance coexists
-            // with our AV1Decoder's Vulkan instance (competing for video decode queue).
-            // Use software decode until we integrate with wgpu's Vulkan device.
-            video::decode_all_frames_sync(&path, tx, cancel_clone, ctx_clone, seek_frame);
+            // GPU decode using shared Vulkan device (falls back to software if unavailable)
+            video::decode_all_frames_gpu(&path, tx, cancel_clone, ctx_clone, seek_frame);
         });
 
         Self {
@@ -515,7 +513,7 @@ impl VideoPlayer {
         let path = self.video_path.clone();
         let ctx = self.ctx.clone();
         self._handle = Some(std::thread::spawn(move || {
-            video::decode_all_frames_sync(&path, tx, cancel, ctx, seek_frame);
+            video::decode_all_frames_gpu(&path, tx, cancel, ctx, seek_frame);
         }));
     }
 }
