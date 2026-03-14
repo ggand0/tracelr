@@ -8,6 +8,7 @@ mod app;
 mod build_info;
 mod cache;
 mod dataset;
+mod gpu_decode;
 mod perf;
 mod theme;
 mod video;
