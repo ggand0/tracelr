@@ -1,0 +1,27 @@
+[package]
+name = "lerobot-explorer"
+version = "0.1.0"
+edition = "2021"
+description = "LeRobot dataset annotation and exploration tool"
+
+[dependencies]
+eframe = "0.31"
+egui = "0.31"
+ffmpeg-next = { version = "7", default-features = false, features = ["format", "software-scaling"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+dirs = "6"
+clap = { version = "4", features = ["derive"] }
+log = "0.4"
+env_logger = "0.11"
+rfd = "0.15"
+
+[build-dependencies]
+chrono = "0.4"
+
+[profile.opt-dev]
+inherits = "release"
+opt-level = 3
+lto = false
+codegen-units = 16
