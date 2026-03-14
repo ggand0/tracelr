@@ -24,17 +24,10 @@ fn main() -> eframe::Result {
     env_logger::init();
     let args = Args::parse();
 
-    // Try to create a custom Vulkan device with both graphics + video decode
-    let wgpu_setup = match gpu_decode::wgpu_device::GpuSetup::new() {
-        Ok(setup) => {
-            log::info!("Custom GPU setup with video decode support created");
-            Some(setup)
-        }
-        Err(e) => {
-            log::warn!("Failed to create custom GPU setup: {}. Using default.", e);
-            None
-        }
-    };
+    // Create a single VkInstance + VkDevice with both graphics and video decode.
+    // NVIDIA's driver corrupts video decode if multiple VkInstances exist,
+    // so we create ONE and share it between wgpu (rendering) and the AV1 decoder.
+    let gpu_setup = gpu_decode::wgpu_device::GpuSetup::new().ok();
 
     let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -43,8 +36,8 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
 
-    if let Some(setup) = wgpu_setup {
-        // Store shared GPU state for background decode threads
+    if let Some(setup) = gpu_setup {
+        // Store shared handles for the video decoder
         gpu_decode::wgpu_device::set_shared_gpu(
             gpu_decode::wgpu_device::SharedGpuState {
                 entry: setup.entry,
@@ -55,6 +48,7 @@ fn main() -> eframe::Result {
             },
         );
 
+        // Give the wgpu-wrapped device to eframe
         options.wgpu_options.wgpu_setup = egui_wgpu::WgpuSetup::Existing(
             egui_wgpu::WgpuSetupExisting {
                 instance: setup.wgpu_instance,

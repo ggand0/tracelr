@@ -463,8 +463,8 @@ impl VideoPlayer {
         let cancel_clone = cancel.clone();
         let ctx_clone = ctx.clone();
         let handle = std::thread::spawn(move || {
-            // Software decode on background thread (GPU decode runs on main thread)
-            video::decode_all_frames_sync(&path, tx, cancel_clone, ctx_clone, seek_frame);
+            // GPU decode using wgpu's Vulkan device (falls back to software)
+            video::decode_all_frames_gpu(&path, tx, cancel_clone, ctx_clone, seek_frame);
         });
 
         Self {
@@ -513,7 +513,7 @@ impl VideoPlayer {
         let path = self.video_path.clone();
         let ctx = self.ctx.clone();
         self._handle = Some(std::thread::spawn(move || {
-            video::decode_all_frames_sync(&path, tx, cancel, ctx, seek_frame);
+            video::decode_all_frames_gpu(&path, tx, cancel, ctx, seek_frame);
         }));
     }
 }

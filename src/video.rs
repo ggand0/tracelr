@@ -459,12 +459,7 @@ pub(crate) fn decode_all_frames_gpu(
         }
     }
 
-    // 5. Give wgpu a moment to complete initial setup on the shared device.
-    // NVIDIA's driver has thread-safety issues with concurrent video decode
-    // and graphics command recording on the same VkDevice.
-    std::thread::sleep(std::time::Duration::from_millis(100));
-
-    // 6. Demux + GPU decode loop
+    // 5. Demux + GPU decode loop
     log::info!("GPU decode: starting demux+decode loop for {}", video_path.display());
     let mut frame_count: usize = 0;
     for (stream, packet) in ictx.packets() {

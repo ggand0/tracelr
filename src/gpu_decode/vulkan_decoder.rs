@@ -1101,13 +1101,13 @@ impl AV1Decoder {
             reserved2: [0; 3],
             OrderHints: self.vbi_order_hint,
             expectedFrameId: [0; 8],
-            pTileInfo: &tile_info,
-            pQuantization: &quantization,
-            pSegmentation: &segmentation,
-            pLoopFilter: &loop_filter,
-            pCDEF: &cdef,
-            pLoopRestoration: &loop_restoration,
-            pGlobalMotion: &global_motion,
+            pTileInfo: std::ptr::null(),
+            pQuantization: std::ptr::null(),
+            pSegmentation: std::ptr::null(),
+            pLoopFilter: std::ptr::null(),
+            pCDEF: std::ptr::null(),
+            pLoopRestoration: std::ptr::null(),
+            pGlobalMotion: std::ptr::null(),
             pFilmGrain: std::ptr::null(),
         };
 
@@ -1126,9 +1126,7 @@ impl AV1Decoder {
         let mut av1_pic_info = vk::VideoDecodeAV1PictureInfoKHR::default()
             .std_picture_info(&std_pic_info)
             .reference_name_slot_indices(ref_slot_indices)
-            .frame_header_offset(frame_header_offset_in_obu as u32)
-            .tile_offsets(&tile_offsets)
-            .tile_sizes(&tile_sizes);
+            .frame_header_offset(frame_header_offset_in_obu as u32);
 
         // 6. Destination picture resource
         let dst_pic_resource = vk::VideoPictureResourceInfoKHR::default()
@@ -1179,32 +1177,11 @@ impl AV1Decoder {
                 self.frame_count, fh.frame_type, fh.is_intra_frame, num_refs, dst_slot
             );
 
-            // Begin video coding — must include ALL slots: input references + destination setup slot
-            // Build a combined array with both reference and setup slots.
-            let mut begin_slots: Vec<vk::VideoReferenceSlotInfoKHR> = Vec::with_capacity(num_refs + 1);
-            // Add input reference slots
-            for i in 0..num_refs {
-                begin_slots.push(vk::VideoReferenceSlotInfoKHR {
-                    s_type: vk::StructureType::VIDEO_REFERENCE_SLOT_INFO_KHR,
-                    p_next: std::ptr::null(),
-                    slot_index: ref_dpb_slots[i],
-                    p_picture_resource: &ref_pic_resources[i] as *const _,
-                    _marker: std::marker::PhantomData,
-                });
-            }
-            // Add destination/setup slot
-            begin_slots.push(vk::VideoReferenceSlotInfoKHR {
-                s_type: vk::StructureType::VIDEO_REFERENCE_SLOT_INFO_KHR,
-                p_next: std::ptr::null(),
-                slot_index: dst_slot as i32,
-                p_picture_resource: &dst_pic_resource as *const _,
-                _marker: std::marker::PhantomData,
-            });
-
+            // Begin video coding
             let begin_info = vk::VideoBeginCodingInfoKHR::default()
                 .video_session(self.video_session)
                 .video_session_parameters(self.session_params)
-                .reference_slots(&begin_slots);
+                .reference_slots(&reference_slots);
 
             log::debug!("  calling cmd_begin_video_coding_khr");
             (self.video_queue_fn.fp().cmd_begin_video_coding_khr)(cmd, &begin_info);
