@@ -706,6 +706,69 @@ impl AV1Decoder {
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
         let command_pool = unsafe { device.create_command_pool(&pool_create, None)? };
 
+        // 12. Pre-transition all DPB images from UNDEFINED to VIDEO_DECODE_DPB_KHR.
+        // The spec requires DPB images to be in this layout when referenced.
+        {
+            let alloc = vk::CommandBufferAllocateInfo::default()
+                .command_pool(command_pool)
+                .level(vk::CommandBufferLevel::PRIMARY)
+                .command_buffer_count(1);
+            let cmd_bufs = unsafe { device.allocate_command_buffers(&alloc)? };
+            let cmd = cmd_bufs[0];
+            unsafe {
+                device.begin_command_buffer(
+                    cmd,
+                    &vk::CommandBufferBeginInfo::default()
+                        .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+                )?;
+
+                let mut barriers = Vec::with_capacity(dpb_images.len());
+                for img in &dpb_images {
+                    barriers.push(
+                        vk::ImageMemoryBarrier::default()
+                            .old_layout(vk::ImageLayout::UNDEFINED)
+                            .new_layout(vk::ImageLayout::VIDEO_DECODE_DPB_KHR)
+                            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                            .image(*img)
+                            .subresource_range(vk::ImageSubresourceRange {
+                                aspect_mask: vk::ImageAspectFlags::COLOR,
+                                base_mip_level: 0,
+                                level_count: 1,
+                                base_array_layer: 0,
+                                layer_count: 1,
+                            })
+                            .src_access_mask(vk::AccessFlags::NONE)
+                            .dst_access_mask(vk::AccessFlags::NONE),
+                    );
+                }
+                device.cmd_pipeline_barrier(
+                    cmd,
+                    vk::PipelineStageFlags::TOP_OF_PIPE,
+                    vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &barriers,
+                );
+
+                device.end_command_buffer(cmd)?;
+
+                let fence = device.create_fence(&vk::FenceCreateInfo::default(), None)?;
+                let cmd_submit = [cmd];
+                let submit = vk::SubmitInfo::default().command_buffers(&cmd_submit);
+                device.queue_submit(
+                    device.get_device_queue(video_queue_family, 0),
+                    &[submit],
+                    fence,
+                )?;
+                device.wait_for_fences(&[fence], true, u64::MAX)?;
+                device.destroy_fence(fence, None);
+                device.free_command_buffers(command_pool, &[cmd]);
+            }
+            log::info!("Pre-transitioned {} DPB images to VIDEO_DECODE_DPB_KHR", dpb_images.len());
+        }
+
         log::info!("Shared AV1 decoder fully initialized");
 
         Ok(Self {
@@ -1116,15 +1179,32 @@ impl AV1Decoder {
                 self.frame_count, fh.frame_type, fh.is_intra_frame, num_refs, dst_slot
             );
 
-            // Begin video coding
+            // Begin video coding — must include ALL slots: input references + destination setup slot
+            // Build a combined array with both reference and setup slots.
+            let mut begin_slots: Vec<vk::VideoReferenceSlotInfoKHR> = Vec::with_capacity(num_refs + 1);
+            // Add input reference slots
+            for i in 0..num_refs {
+                begin_slots.push(vk::VideoReferenceSlotInfoKHR {
+                    s_type: vk::StructureType::VIDEO_REFERENCE_SLOT_INFO_KHR,
+                    p_next: std::ptr::null(),
+                    slot_index: ref_dpb_slots[i],
+                    p_picture_resource: &ref_pic_resources[i] as *const _,
+                    _marker: std::marker::PhantomData,
+                });
+            }
+            // Add destination/setup slot
+            begin_slots.push(vk::VideoReferenceSlotInfoKHR {
+                s_type: vk::StructureType::VIDEO_REFERENCE_SLOT_INFO_KHR,
+                p_next: std::ptr::null(),
+                slot_index: dst_slot as i32,
+                p_picture_resource: &dst_pic_resource as *const _,
+                _marker: std::marker::PhantomData,
+            });
+
             let begin_info = vk::VideoBeginCodingInfoKHR::default()
                 .video_session(self.video_session)
                 .video_session_parameters(self.session_params)
-                .reference_slots(&reference_slots);
-
-            // Serialize with wgpu rendering to avoid driver crash
-            let _lock = super::wgpu_device::vk_device_lock();
-            self.device.device_wait_idle()?;
+                .reference_slots(&begin_slots);
 
             log::debug!("  calling cmd_begin_video_coding_khr");
             (self.video_queue_fn.fp().cmd_begin_video_coding_khr)(cmd, &begin_info);

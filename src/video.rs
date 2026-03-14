@@ -475,13 +475,6 @@ pub(crate) fn decode_all_frames_gpu(
             None => continue,
         };
 
-        // TEMP: only decode key frames to isolate inter frame crash
-        let obus = av1_obu::parse_obu_headers(pkt_data).ok();
-        let has_seq = obus.as_ref().map(|o| o.iter().any(|x| x.obu_type == av1_obu::ObuType::SequenceHeader)).unwrap_or(false);
-        if !has_seq && frame_count > 0 {
-            // Skip inter frames — only decode packets that contain a sequence header (key frames)
-            continue;
-        }
         match decoder.decode_frame(pkt_data) {
             Ok(output) => {
                 if frame_count == 0 {
