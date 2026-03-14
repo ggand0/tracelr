@@ -167,6 +167,13 @@ pub struct AV1Decoder {
     dpb_memory: Vec<vk::DeviceMemory>,
     dpb_slot_active: [bool; 8],
 
+    /// AV1 Virtual Buffer Index — maps VBI slot [0..7] to DPB slot index.
+    /// Updated by refresh_frame_flags after each decode.
+    /// -1 means the VBI slot is empty.
+    vbi_to_dpb: [i32; 8],
+    /// Order hint stored for each VBI slot (for reference frame ordering).
+    vbi_order_hint: [u8; 8],
+
     // Output image (separate from DPB for display)
     output_image: vk::Image,
     output_view: vk::ImageView,
@@ -476,6 +483,8 @@ impl AV1Decoder {
             dpb_views,
             dpb_memory,
             dpb_slot_active: [false; 8],
+            vbi_to_dpb: [-1; 8],
+            vbi_order_hint: [0; 8],
             output_image: out_img,
             output_view: out_view,
             output_memory: out_mem,
@@ -575,39 +584,47 @@ impl AV1Decoder {
         // 3. Determine DPB slot for this frame's output
         let dst_slot = self.allocate_dpb_slot()?;
 
-        // 4. Build reference slot info for active references
-        let mut ref_slot_indices: [i32; 7] = [-1; 7]; // VK_MAX_VIDEO_AV1_REFERENCES_PER_FRAME_KHR = 7
+        // 4. Build reference slot info using VBI → DPB mapping
+        //
+        // AV1 reference names: LAST_FRAME(1)..ALTREF_FRAME(7) map to ref_frame_idx[0..6].
+        // Each ref_frame_idx[i] is a VBI slot (0..7).
+        // vbi_to_dpb[vbi] gives the DPB slot index.
+        // referenceNameSlotIndices[i] = DPB slot for reference name i+1.
+        let mut ref_slot_indices: [i32; 7] = [-1; 7];
         let mut reference_slots: Vec<vk::VideoReferenceSlotInfoKHR> = Vec::new();
-
-        // Build reference picture resources (must live long enough for the command)
         let mut ref_pic_resources: Vec<vk::VideoPictureResourceInfoKHR> = Vec::new();
+        let mut seen_dpb_slots = std::collections::HashSet::new();
+
         if !fh.is_intra_frame {
             for i in 0..7 {
-                let ref_idx = fh.ref_frame_idx[i] as usize;
-                if ref_idx < 8 && self.dpb_slot_active[ref_idx] {
-                    ref_slot_indices[i] = ref_idx as i32;
-                    ref_pic_resources.push(
-                        vk::VideoPictureResourceInfoKHR::default()
-                            .coded_offset(vk::Offset2D { x: 0, y: 0 })
-                            .coded_extent(vk::Extent2D {
-                                width: self.width,
-                                height: self.height,
-                            })
-                            .base_array_layer(0)
-                            .image_view_binding(self.dpb_views[ref_idx]),
-                    );
+                let vbi_slot = fh.ref_frame_idx[i] as usize;
+                if vbi_slot < 8 {
+                    let dpb_slot = self.vbi_to_dpb[vbi_slot];
+                    if dpb_slot >= 0 && (dpb_slot as usize) < 8 {
+                        ref_slot_indices[i] = dpb_slot;
+
+                        // Add to reference_slots (deduplicated — multiple names can point to same DPB slot)
+                        if seen_dpb_slots.insert(dpb_slot as usize) {
+                            ref_pic_resources.push(
+                                vk::VideoPictureResourceInfoKHR::default()
+                                    .coded_offset(vk::Offset2D { x: 0, y: 0 })
+                                    .coded_extent(vk::Extent2D {
+                                        width: self.width,
+                                        height: self.height,
+                                    })
+                                    .base_array_layer(0)
+                                    .image_view_binding(self.dpb_views[dpb_slot as usize]),
+                            );
+                        }
+                    }
                 }
             }
-            for (i, res) in ref_pic_resources.iter().enumerate() {
+            for (idx, res) in ref_pic_resources.iter().enumerate() {
+                let dpb_slot = *seen_dpb_slots.iter().nth(idx).unwrap() as i32;
                 reference_slots.push(vk::VideoReferenceSlotInfoKHR {
                     s_type: vk::StructureType::VIDEO_REFERENCE_SLOT_INFO_KHR,
                     p_next: std::ptr::null(),
-                    slot_index: fh.ref_frame_idx
-                        .iter()
-                        .filter(|&&idx| (idx as usize) < 8 && self.dpb_slot_active[idx as usize])
-                        .nth(i)
-                        .map(|&idx| idx as i32)
-                        .unwrap_or(-1),
+                    slot_index: dpb_slot,
                     p_picture_resource: res as *const _,
                     _marker: std::marker::PhantomData,
                 });
@@ -640,7 +657,7 @@ impl AV1Decoder {
             SkipModeFrame: [0; 2],
             coded_denom: fh.coded_denom,
             reserved2: [0; 3],
-            OrderHints: fh.ref_order_hint,
+            OrderHints: self.vbi_order_hint,
             expectedFrameId: [0; 8],
             pTileInfo: std::ptr::null(),
             pQuantization: std::ptr::null(),
@@ -744,12 +761,16 @@ impl AV1Decoder {
                 .free_command_buffers(self.command_pool, &[cmd]);
         }
 
-        // 9. Update DPB state from refresh_frame_flags
+        // 9. Update VBI → DPB mapping from refresh_frame_flags.
+        // For each VBI slot flagged in refresh_frame_flags, map it to the dst_slot
+        // where this frame was decoded.
         for i in 0..8 {
             if fh.refresh_frame_flags & (1 << i) != 0 {
-                self.dpb_slot_active[i] = true;
+                self.vbi_to_dpb[i] = dst_slot as i32;
+                self.vbi_order_hint[i] = fh.order_hint;
             }
         }
+        self.dpb_slot_active[dst_slot] = true;
 
         self.frame_count += 1;
 
@@ -762,14 +783,24 @@ impl AV1Decoder {
     }
 
     /// Allocate a DPB slot for the decoded frame.
-    fn allocate_dpb_slot(&mut self) -> Result<usize, VulkanDecoderError> {
-        // Find first inactive slot, or reuse slot 0
+    /// Finds a slot not referenced by any current VBI entry.
+    fn allocate_dpb_slot(&self) -> Result<usize, VulkanDecoderError> {
+        // Build set of DPB slots currently in use by VBI
+        let mut in_use = [false; 8];
+        for &dpb in &self.vbi_to_dpb {
+            if dpb >= 0 && (dpb as usize) < 8 {
+                in_use[dpb as usize] = true;
+            }
+        }
+        // Find first free slot
         for i in 0..8 {
-            if !self.dpb_slot_active[i] {
+            if !in_use[i] {
                 return Ok(i);
             }
         }
-        // All slots active — reuse oldest (slot 0)
+        // All slots in use — this shouldn't happen with correct AV1 streams.
+        // Reuse slot 0 as fallback.
+        log::warn!("All 8 DPB slots in use, reusing slot 0");
         Ok(0)
     }
 

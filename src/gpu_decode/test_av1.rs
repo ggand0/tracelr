@@ -280,4 +280,81 @@ mod tests {
             break; // First packet only
         }
     }
+
+    #[test]
+    fn test_decode_multiple_frames() {
+        let video_path = match get_test_video() {
+            Some(p) => p,
+            None => {
+                eprintln!("Skipping test: no test video available");
+                return;
+            }
+        };
+
+        // Parse sequence header
+        ffmpeg_next::init().unwrap();
+        let mut ictx = ffmpeg_next::format::input(&video_path).unwrap();
+        let video_stream_index;
+        let decoder_params;
+        {
+            let stream = ictx.streams().best(ffmpeg_next::media::Type::Video).unwrap();
+            video_stream_index = stream.index();
+            decoder_params = stream.parameters();
+        }
+        let ctx = ffmpeg_next::codec::context::Context::from_parameters(decoder_params).unwrap();
+        let extradata = unsafe {
+            let ptr = (*ctx.as_ptr()).extradata;
+            let size = (*ctx.as_ptr()).extradata_size as usize;
+            std::slice::from_raw_parts(ptr, size)
+        };
+        let obu_data = &extradata[4..];
+        let obus = av1_obu::parse_obu_headers(obu_data).unwrap();
+        let seq_obu = obus
+            .iter()
+            .find(|o| o.obu_type == av1_obu::ObuType::SequenceHeader)
+            .unwrap();
+        let seq = av1_obu::parse_sequence_header(
+            &obu_data[seq_obu.data_offset..seq_obu.data_offset + seq_obu.data_size],
+        )
+        .unwrap();
+
+        let mut decoder = vulkan_decoder::AV1Decoder::new(&seq).unwrap();
+        let mut decoded_count = 0;
+        let max_frames = 30; // Decode first 30 frames (1 second at 30fps)
+
+        for (stream, packet) in ictx.packets() {
+            if stream.index() != video_stream_index {
+                continue;
+            }
+            let pkt_data = packet.data().unwrap();
+
+            match decoder.decode_frame(pkt_data) {
+                Ok(output) => {
+                    decoded_count += 1;
+                    if decoded_count <= 5 || decoded_count % 10 == 0 {
+                        eprintln!(
+                            "Frame {}: type={:?}, show={}, dpb_slot={}",
+                            decoded_count, output.frame_type, output.show_frame, output.dpb_slot
+                        );
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Decode failed at frame {}: {}", decoded_count + 1, e);
+                    break;
+                }
+            }
+
+            if decoded_count >= max_frames {
+                break;
+            }
+        }
+
+        eprintln!("Successfully decoded {} frames", decoded_count);
+        assert!(
+            decoded_count >= max_frames,
+            "Expected {} frames, got {}",
+            max_frames,
+            decoded_count
+        );
+    }
 }

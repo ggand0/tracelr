@@ -331,6 +331,179 @@ fn decode_all_frames_inner(
     }
 }
 
+/// Decode frames using GPU hardware decoder (Vulkan Video AV1).
+/// Uses ffmpeg for demuxing only — the actual decode happens on the GPU.
+/// Falls back to software decode if GPU init fails.
+pub(crate) fn decode_all_frames_gpu(
+    video_path: &Path,
+    tx: mpsc::SyncSender<FrameDecodeResult>,
+    cancel: Arc<AtomicBool>,
+    ctx: egui::Context,
+    seek_to_frame: Option<usize>,
+) {
+    use crate::gpu_decode::{av1_obu, vulkan_decoder};
+
+    ensure_ffmpeg_init();
+
+    // 1. Open video for demuxing
+    let mut ictx = match ffmpeg_next::format::input(video_path) {
+        Ok(c) => c,
+        Err(e) => {
+            log::error!("GPU decode: failed to open {}: {}", video_path.display(), e);
+            return;
+        }
+    };
+
+    let video_stream_index;
+    let decoder_params;
+    let fps;
+    {
+        let stream = match ictx.streams().best(ffmpeg_next::media::Type::Video) {
+            Some(s) => s,
+            None => return,
+        };
+        video_stream_index = stream.index();
+        decoder_params = stream.parameters();
+        let rate = stream.rate();
+        fps = if rate.1 > 0 {
+            rate.0 as f64 / rate.1 as f64
+        } else {
+            30.0
+        };
+    }
+
+    // 2. Extract sequence header from codec extradata
+    let codec_ctx =
+        match ffmpeg_next::codec::context::Context::from_parameters(decoder_params) {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("GPU decode: failed to create codec context: {}", e);
+                return;
+            }
+        };
+
+    let extradata = unsafe {
+        let ptr = (*codec_ctx.as_ptr()).extradata;
+        let size = (*codec_ctx.as_ptr()).extradata_size as usize;
+        if ptr.is_null() || size < 5 {
+            log::error!("GPU decode: no extradata (need AV1 sequence header)");
+            return;
+        }
+        std::slice::from_raw_parts(ptr, size)
+    };
+
+    // Skip 4-byte AV1CodecConfigurationRecord header
+    let obu_data = &extradata[4..];
+    let obus = match av1_obu::parse_obu_headers(obu_data) {
+        Ok(o) => o,
+        Err(e) => {
+            log::error!("GPU decode: failed to parse extradata OBUs: {}", e);
+            return;
+        }
+    };
+    let seq_obu = match obus
+        .iter()
+        .find(|o| o.obu_type == av1_obu::ObuType::SequenceHeader)
+    {
+        Some(o) => o,
+        None => {
+            log::error!("GPU decode: no sequence header in extradata");
+            return;
+        }
+    };
+    let seq = match av1_obu::parse_sequence_header(
+        &obu_data[seq_obu.data_offset..seq_obu.data_offset + seq_obu.data_size],
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            log::error!("GPU decode: failed to parse sequence header: {}", e);
+            return;
+        }
+    };
+
+    // 3. Create GPU decoder
+    let mut decoder = match vulkan_decoder::AV1Decoder::new(&seq) {
+        Ok(d) => {
+            log::info!("GPU AV1 decoder initialized");
+            d
+        }
+        Err(e) => {
+            log::warn!("GPU decode unavailable ({}), falling back to software", e);
+            // Fallback to software decode
+            decode_all_frames_inner(video_path, &tx, &cancel, &ctx, seek_to_frame);
+            return;
+        }
+    };
+
+    let (width, height) = decoder.dimensions();
+
+    // 4. Optionally seek
+    if let Some(target_frame) = seek_to_frame {
+        if target_frame > 0 {
+            let target_us = (target_frame as f64 / fps * 1_000_000.0) as i64;
+            let _ = ictx.seek(target_us, ..target_us);
+        }
+    }
+
+    // 5. Demux + GPU decode loop
+    let mut frame_count: usize = 0;
+    for (stream, packet) in ictx.packets() {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        if stream.index() != video_stream_index {
+            continue;
+        }
+
+        let pkt_data = match packet.data() {
+            Some(d) => d,
+            None => continue,
+        };
+
+        match decoder.decode_frame(pkt_data) {
+            Ok(output) => {
+                if !output.show_frame {
+                    continue;
+                }
+
+                // Readback + NV12→RGBA
+                match decoder.read_back_nv12(output.dpb_slot) {
+                    Ok((y_data, uv_data)) => {
+                        let rgba =
+                            vulkan_decoder::AV1Decoder::nv12_to_rgba(&y_data, &uv_data, width, height);
+                        let image = egui::ColorImage {
+                            size: [width as usize, height as usize],
+                            pixels: rgba
+                                .chunks_exact(4)
+                                .map(|c| {
+                                    egui::Color32::from_rgba_premultiplied(c[0], c[1], c[2], c[3])
+                                })
+                                .collect(),
+                        };
+
+                        if !tx.send_frame(FrameDecodeResult {
+                            frame_index: frame_count,
+                            image: Some(image),
+                        }) {
+                            return;
+                        }
+                        ctx.request_repaint();
+                        frame_count += 1;
+                    }
+                    Err(e) => {
+                        log::warn!("GPU readback failed at frame {}: {}", frame_count, e);
+                    }
+                }
+            }
+            Err(e) => {
+                log::warn!("GPU decode failed at frame {}: {}", frame_count, e);
+                // Continue — some frames may fail during DPB warmup
+            }
+        }
+    }
+    log::info!("GPU decode complete: {} frames", frame_count);
+}
+
 /// Decode middle frame with timing info, for use in background threads.
 pub(crate) fn decode_middle_frame_timed(
     video_path: &Path,
