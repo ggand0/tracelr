@@ -1,9 +1,10 @@
 use std::path::PathBuf;
+use std::time::Instant;
 
 use eframe::egui;
 
 use crate::annotation::AnnotationState;
-use crate::cache::{DecodeLruCache, EpisodeCache, SliderLoader};
+use crate::cache::{DecodeLruCache, EpisodeCache, FrameCache, SliderLoader};
 use crate::dataset::{self, LeRobotDataset};
 use crate::perf::PerfTracker;
 use crate::theme::UiTheme;
@@ -24,11 +25,19 @@ pub struct App {
     video_paths: Vec<PathBuf>,
     loading_error: Option<String>,
 
-    // Cache
+    // Episode cache
     episode_cache: Option<EpisodeCache>,
     slider_loader: SliderLoader,
     decode_cache: DecodeLruCache,
     slider_dragging: bool,
+
+    // Video playback
+    viewing_video: bool,
+    frame_cache: Option<FrameCache>,
+    current_frame: usize,
+    playing: bool,
+    last_frame_time: Option<Instant>,
+    frame_slider_dragging: bool,
 
     // UI
     theme: UiTheme,
@@ -51,6 +60,12 @@ impl App {
             slider_loader: SliderLoader::new(),
             decode_cache: DecodeLruCache::new(LRU_CAPACITY),
             slider_dragging: false,
+            viewing_video: false,
+            frame_cache: None,
+            current_frame: 0,
+            playing: false,
+            last_frame_time: None,
+            frame_slider_dragging: false,
             theme: UiTheme::teal_dark(),
             perf: PerfTracker::new(),
             initial_size_set: false,
@@ -277,16 +292,263 @@ impl App {
         }
     }
 
+    // -- Video playback --
+
+    fn enter_video_mode(&mut self, ctx: &egui::Context) {
+        if self.viewing_video {
+            return;
+        }
+        let ds = match &self.dataset {
+            Some(ds) => ds,
+            None => return,
+        };
+        let ep = match ds.episodes.get(self.current_episode) {
+            Some(ep) => ep,
+            None => return,
+        };
+        let video_path = match self.video_paths.get(self.current_episode) {
+            Some(p) => p.clone(),
+            None => return,
+        };
+
+        let total_frames = ep.length;
+        let fps = ds.info.fps;
+        let center = total_frames / 2; // Start at middle (same frame as thumbnail)
+
+        log::info!(
+            "Entering video mode: ep {}, {} frames, {}fps",
+            self.current_episode,
+            total_frames,
+            fps
+        );
+
+        let cache = FrameCache::new(ctx, &video_path, total_frames, fps, center);
+        self.frame_cache = Some(cache);
+        self.current_frame = center;
+        self.viewing_video = true;
+        self.playing = false;
+        self.last_frame_time = None;
+    }
+
+    fn exit_video_mode(&mut self) {
+        if !self.viewing_video {
+            return;
+        }
+        self.viewing_video = false;
+        self.playing = false;
+        self.frame_cache = None;
+        self.last_frame_time = None;
+        // Restore episode thumbnail
+        if let Some(cache) = &self.episode_cache {
+            if let Some(tex) = cache.current_texture_for(self.current_episode) {
+                self.current_texture = Some(tex);
+            }
+        }
+    }
+
+    fn tick_playback(&mut self, ctx: &egui::Context) {
+        if !self.playing || !self.viewing_video {
+            return;
+        }
+        let fps = self
+            .frame_cache
+            .as_ref()
+            .map(|c| c.fps)
+            .unwrap_or(30);
+        let frame_duration = std::time::Duration::from_secs_f64(1.0 / fps as f64);
+
+        let now = Instant::now();
+        let should_advance = match self.last_frame_time {
+            Some(last) => now.duration_since(last) >= frame_duration,
+            None => {
+                self.last_frame_time = Some(now);
+                false
+            }
+        };
+
+        if !should_advance {
+            ctx.request_repaint(); // Keep ticking
+            return;
+        }
+
+        let total = self
+            .frame_cache
+            .as_ref()
+            .map(|c| c.total_frames)
+            .unwrap_or(0);
+        let next = self.current_frame + 1;
+        if next >= total {
+            // Reached end — stop playback
+            self.playing = false;
+            return;
+        }
+
+        // Gate on cache: only advance if next frame is ready
+        let cached = self
+            .frame_cache
+            .as_ref()
+            .map(|c| c.is_cached(next))
+            .unwrap_or(false);
+
+        if cached {
+            self.current_frame = next;
+            if let Some(cache) = &mut self.frame_cache {
+                if let Some(tex) = cache.navigate_forward(next) {
+                    self.current_texture = Some(tex);
+                    self.perf.record_display();
+                }
+            }
+            self.last_frame_time = Some(now);
+        }
+
+        ctx.request_repaint(); // Keep ticking
+    }
+
     fn handle_keyboard(&mut self, ctx: &egui::Context) {
         if self.dataset.is_none() {
             return;
         }
+
+        // Global keys (both modes)
+        let mut enter_pressed = false;
+        let mut escape_pressed = false;
+        let mut space_pressed = false;
+
+        ctx.input(|i| {
+            enter_pressed = i.key_pressed(egui::Key::Enter);
+            escape_pressed = i.key_pressed(egui::Key::Escape);
+            space_pressed = i.key_pressed(egui::Key::Space);
+
+            // Annotation shortcuts (1-4) — work in both modes
+            for (key, idx) in [
+                (egui::Key::Num1, 0),
+                (egui::Key::Num2, 1),
+                (egui::Key::Num3, 2),
+                (egui::Key::Num4, 3),
+            ] {
+                if i.key_pressed(key) {
+                    self.annotations.set(self.current_episode, idx);
+                }
+            }
+
+            if i.modifiers.command && i.key_pressed(egui::Key::S) {
+                self.save_annotations();
+            }
+        });
+
+        // Toggle video mode
+        if enter_pressed {
+            if self.viewing_video {
+                self.exit_video_mode();
+            } else {
+                self.enter_video_mode(ctx);
+            }
+            return;
+        }
+        if escape_pressed && self.viewing_video {
+            self.exit_video_mode();
+            return;
+        }
+
+        if self.viewing_video {
+            self.handle_keyboard_video(ctx, space_pressed);
+        } else {
+            self.handle_keyboard_episode(ctx);
+        }
+    }
+
+    fn handle_keyboard_video(&mut self, ctx: &egui::Context, space_pressed: bool) {
+        if space_pressed {
+            self.playing = !self.playing;
+            if self.playing {
+                self.last_frame_time = Some(Instant::now());
+            } else {
+                self.last_frame_time = None;
+            }
+        }
+
+        let total_frames = self
+            .frame_cache
+            .as_ref()
+            .map(|c| c.total_frames)
+            .unwrap_or(0);
+
+        let mut frame_step: Option<isize> = None;
+        let mut frame_jump: Option<usize> = None;
+
+        // Check frame cache for skate gating
+        let next_cached = self
+            .frame_cache
+            .as_ref()
+            .map(|c| c.is_cached(self.current_frame + 1))
+            .unwrap_or(false);
+        let prev_cached = self.current_frame > 0
+            && self
+                .frame_cache
+                .as_ref()
+                .map(|c| c.is_cached(self.current_frame - 1))
+                .unwrap_or(false);
+
+        ctx.input(|i| {
+            if i.key_pressed(egui::Key::ArrowRight) || i.key_pressed(egui::Key::D) {
+                frame_step = Some(1);
+            }
+            if i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::A) {
+                frame_step = Some(-1);
+            }
+            // Skate mode for frames
+            if i.modifiers.shift {
+                if (i.key_down(egui::Key::ArrowRight) || i.key_down(egui::Key::D)) && next_cached {
+                    frame_step = Some(1);
+                }
+                if (i.key_down(egui::Key::ArrowLeft) || i.key_down(egui::Key::A)) && prev_cached {
+                    frame_step = Some(-1);
+                }
+            }
+            if i.key_pressed(egui::Key::Home) {
+                frame_jump = Some(0);
+            }
+            if i.key_pressed(egui::Key::End) {
+                frame_jump = Some(total_frames.saturating_sub(1));
+            }
+        });
+
+        if let Some(delta) = frame_step {
+            let new_frame = if delta > 0 {
+                (self.current_frame + 1).min(total_frames.saturating_sub(1))
+            } else {
+                self.current_frame.saturating_sub(1)
+            };
+            if new_frame != self.current_frame {
+                self.current_frame = new_frame;
+                if let Some(cache) = &mut self.frame_cache {
+                    let tex = if delta > 0 {
+                        cache.navigate_forward(new_frame)
+                    } else {
+                        cache.navigate_backward(new_frame)
+                    };
+                    if let Some(tex) = tex {
+                        self.current_texture = Some(tex);
+                        self.perf.record_display();
+                    }
+                }
+            }
+        } else if let Some(frame) = frame_jump {
+            self.current_frame = frame;
+            if let Some(cache) = &mut self.frame_cache {
+                if let Some(path) = self.video_paths.get(self.current_episode) {
+                    cache.jump_to(frame, path);
+                }
+            }
+        }
+    }
+
+    fn handle_keyboard_episode(&mut self, ctx: &egui::Context) {
         let total = self.video_paths.len();
 
         let mut step: Option<isize> = None;
         let mut jump: Option<usize> = None;
 
-        // Check if next episode is cached (for skate mode gating)
         let next_cached = self
             .episode_cache
             .as_ref()
@@ -299,15 +561,12 @@ impl App {
             .unwrap_or(false);
 
         ctx.input(|i| {
-            // Normal navigation (key_pressed = once per press)
             if i.key_pressed(egui::Key::ArrowRight) || i.key_pressed(egui::Key::D) {
                 step = Some(1);
             }
             if i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::A) {
                 step = Some(-1);
             }
-
-            // Skate mode: Shift+Arrow/AD held = advance every frame, gated on cache
             if i.modifiers.shift {
                 if (i.key_down(egui::Key::ArrowRight) || i.key_down(egui::Key::D)) && next_cached {
                     step = Some(1);
@@ -321,23 +580,6 @@ impl App {
             }
             if i.key_pressed(egui::Key::End) {
                 jump = Some(total.saturating_sub(1));
-            }
-
-            // Annotation shortcuts (1-4)
-            for (key, idx) in [
-                (egui::Key::Num1, 0),
-                (egui::Key::Num2, 1),
-                (egui::Key::Num3, 2),
-                (egui::Key::Num4, 3),
-            ] {
-                if i.key_pressed(key) {
-                    self.annotations.set(self.current_episode, idx);
-                }
-            }
-
-            // Save annotations (Ctrl+S)
-            if i.modifiers.command && i.key_pressed(egui::Key::S) {
-                self.save_annotations();
             }
         });
 
@@ -534,6 +776,9 @@ impl App {
         });
 
         if let Some(ep) = navigate_to {
+            if self.viewing_video {
+                self.exit_video_mode();
+            }
             self.navigate_jump(ep, ctx);
         }
     }
@@ -803,6 +1048,134 @@ impl App {
             });
         });
     }
+
+    // -- Video mode UI --
+
+    fn show_frame_slider(&mut self, _ctx: &egui::Context, ui: &mut egui::Ui) {
+        let total_frames = self
+            .frame_cache
+            .as_ref()
+            .map(|c| c.total_frames)
+            .unwrap_or(0);
+        if total_frames <= 1 {
+            return;
+        }
+
+        let max = total_frames - 1;
+        let accent = self.theme.accent;
+
+        let slider_width = ui.available_width();
+        let thickness = ui
+            .text_style_height(&egui::TextStyle::Body)
+            .max(ui.spacing().interact_size.y);
+        let (rect, response) =
+            ui.allocate_exact_size(egui::vec2(slider_width, thickness), egui::Sense::drag());
+
+        let handle_radius = rect.height() / 2.5;
+        let rail_radius = 4.0_f32;
+        let cy = rect.center().y;
+        let handle_range = (rect.left() + handle_radius)..=(rect.right() - handle_radius);
+
+        let mut idx = self.current_frame;
+
+        if let Some(pos) = response.interact_pointer_pos() {
+            let usable = rect.x_range().shrink(handle_radius);
+            let drag_t = ((pos.x - usable.min) / (usable.max - usable.min)).clamp(0.0, 1.0);
+            let new_idx = (max as f32 * drag_t).round() as usize;
+
+            if !self.frame_slider_dragging {
+                self.frame_slider_dragging = true;
+                self.playing = false; // Pause on slider grab
+            }
+
+            if new_idx != self.current_frame {
+                self.current_frame = new_idx;
+                // Try to show cached frame
+                if let Some(cache) = &self.frame_cache {
+                    if let Some(tex) = cache.texture_for(new_idx) {
+                        self.current_texture = Some(tex);
+                        self.perf.record_display();
+                    }
+                }
+            }
+            idx = self.current_frame;
+        }
+
+        if response.drag_stopped() && self.frame_slider_dragging {
+            self.frame_slider_dragging = false;
+            // Restart decoder from new position
+            if let Some(cache) = &mut self.frame_cache {
+                if let Some(path) = self.video_paths.get(self.current_episode) {
+                    cache.jump_to(self.current_frame, path);
+                }
+            }
+        }
+
+        // Draw rail
+        let rail = egui::Rect::from_min_max(
+            egui::pos2(rect.left(), cy - rail_radius),
+            egui::pos2(rect.right(), cy + rail_radius),
+        );
+        let t = idx as f32 / max as f32;
+        let handle_x = egui::lerp(handle_range, t);
+
+        ui.painter()
+            .rect_filled(rail, rail_radius, egui::Color32::from_gray(60));
+        let filled = egui::Rect::from_min_max(rail.min, egui::pos2(handle_x, rail.max.y));
+        ui.painter().rect_filled(filled, rail_radius, accent);
+        ui.painter().circle(
+            egui::pos2(handle_x, cy),
+            handle_radius,
+            accent,
+            egui::Stroke::NONE,
+        );
+    }
+
+    fn show_frame_footer(&self, ui: &mut egui::Ui) {
+        let font = egui::FontId::monospace(13.0);
+        let bright = egui::Color32::from_gray(200);
+        let dim = egui::Color32::from_gray(160);
+
+        let total_frames = self
+            .frame_cache
+            .as_ref()
+            .map(|c| c.total_frames)
+            .unwrap_or(0);
+        let fps = self.frame_cache.as_ref().map(|c| c.fps).unwrap_or(30);
+
+        ui.horizontal(|ui| {
+            // Play state
+            let play_icon = if self.playing { "\u{23f8}" } else { "\u{25b6}" };
+            ui.label(
+                egui::RichText::new(format!("{} ep {:03}", play_icon, self.current_episode))
+                    .font(font.clone())
+                    .color(bright),
+            );
+
+            // Timecode
+            let time_s = self.current_frame as f64 / fps as f64;
+            let total_s = total_frames as f64 / fps as f64;
+            ui.separator();
+            ui.label(
+                egui::RichText::new(format!("{:.1}s / {:.1}s", time_s, total_s))
+                    .font(font.clone())
+                    .color(dim),
+            );
+
+            // Right-aligned: frame index
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "frame {} / {}",
+                        self.current_frame + 1,
+                        total_frames
+                    ))
+                    .font(font.clone())
+                    .color(bright),
+                );
+            });
+        });
+    }
 }
 
 impl eframe::App for App {
@@ -822,10 +1195,23 @@ impl eframe::App for App {
             }
         }
 
-        // Poll cache for completed background decodes
+        // Poll caches for completed background decodes
         if let Some(cache) = &mut self.episode_cache {
             cache.poll();
         }
+        if let Some(cache) = &mut self.frame_cache {
+            cache.poll();
+            // Update texture from cache if we don't have one yet
+            if self.viewing_video && self.current_texture.is_none() {
+                if let Some(tex) = cache.texture_for(self.current_frame) {
+                    self.current_texture = Some(tex);
+                    self.perf.record_display();
+                }
+            }
+        }
+
+        // Advance playback
+        self.tick_playback(ctx);
 
         self.handle_dropped_files(ctx);
         self.handle_keyboard(ctx);
@@ -854,13 +1240,21 @@ impl eframe::App for App {
         egui::TopBottomPanel::bottom("footer")
             .exact_height(22.0)
             .show(ctx, |ui| {
-                self.show_footer(ui);
+                if self.viewing_video {
+                    self.show_frame_footer(ui);
+                } else {
+                    self.show_footer(ui);
+                }
             });
 
         egui::TopBottomPanel::bottom("nav_slider")
             .exact_height(28.0)
             .show(ctx, |ui| {
-                self.show_nav_slider(ctx, ui);
+                if self.viewing_video {
+                    self.show_frame_slider(ctx, ui);
+                } else {
+                    self.show_nav_slider(ctx, ui);
+                }
             });
 
         // Central panel: frame display

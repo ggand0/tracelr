@@ -1,5 +1,6 @@
 use std::path::Path;
-use std::sync::Once;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Once};
 use std::time::Instant;
 
 use eframe::egui;
@@ -159,6 +160,140 @@ fn frame_to_color_image(
         size: [width, height],
         pixels,
     })
+}
+
+/// Result of decoding a single video frame (for FrameCache).
+pub(crate) struct FrameDecodeResult {
+    pub frame_index: usize,
+    pub image: Option<egui::ColorImage>,
+}
+
+/// Decode all frames from a video file sequentially, sending each via channel.
+/// Starts from the beginning (or optionally seeks first). Checks `cancel` flag
+/// between frames so the thread can be stopped when the user switches episodes.
+///
+/// For 480×640 AV1, sequential decode is ~2-5ms/frame. A 600-frame episode
+/// takes ~1.2-3 seconds to fully decode from the start.
+pub(crate) fn decode_all_frames(
+    video_path: &Path,
+    tx: mpsc::Sender<FrameDecodeResult>,
+    cancel: Arc<AtomicBool>,
+    ctx: egui::Context,
+    seek_to_frame: Option<usize>,
+) {
+    ensure_ffmpeg_init();
+
+    let mut ictx = match ffmpeg_next::format::input(video_path) {
+        Ok(c) => c,
+        Err(e) => {
+            log::error!("Failed to open video {}: {}", video_path.display(), e);
+            return;
+        }
+    };
+
+    let video_stream_index;
+    let decoder_params;
+    let fps;
+    {
+        let stream = match ictx.streams().best(ffmpeg_next::media::Type::Video) {
+            Some(s) => s,
+            None => return,
+        };
+        video_stream_index = stream.index();
+        decoder_params = stream.parameters();
+        // Get fps from stream rate
+        let rate = stream.rate();
+        fps = if rate.1 > 0 {
+            rate.0 as f64 / rate.1 as f64
+        } else {
+            30.0
+        };
+    }
+
+    let mut decoder = match ffmpeg_next::codec::context::Context::from_parameters(decoder_params)
+        .and_then(|c| c.decoder().video())
+    {
+        Ok(d) => d,
+        Err(e) => {
+            log::error!("Failed to create decoder: {}", e);
+            return;
+        }
+    };
+
+    // Optionally seek to approximate position
+    if let Some(target_frame) = seek_to_frame {
+        if target_frame > 0 {
+            let target_us = (target_frame as f64 / fps * 1_000_000.0) as i64;
+            let _ = ictx.seek(target_us, ..target_us);
+        }
+    }
+
+    let mut frame_count: usize = 0;
+    let mut decoded = ffmpeg_next::frame::Video::empty();
+
+    // If we seeked, we don't know the exact frame index. Estimate from PTS.
+    let mut pts_base: Option<(i64, ffmpeg_next::Rational)> = None;
+
+    for (stream, packet) in ictx.packets() {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        if stream.index() != video_stream_index {
+            continue;
+        }
+
+        if pts_base.is_none() {
+            pts_base = Some((packet.pts().unwrap_or(0), stream.time_base()));
+        }
+
+        decoder.send_packet(&packet).ok();
+        while decoder.receive_frame(&mut decoded).is_ok() {
+            if cancel.load(Ordering::Relaxed) {
+                return;
+            }
+
+            // Calculate frame index from PTS
+            let actual_frame = if let (Some(pts), Some((_, tb))) = (decoded.pts(), &pts_base) {
+                let time_s = pts as f64 * tb.0 as f64 / tb.1 as f64;
+                (time_s * fps).round() as usize
+            } else {
+                frame_count
+            };
+
+            let image = frame_to_color_image(&decoded).ok();
+            if tx
+                .send(FrameDecodeResult {
+                    frame_index: actual_frame,
+                    image,
+                })
+                .is_err()
+            {
+                return; // receiver dropped
+            }
+            ctx.request_repaint();
+            frame_count += 1;
+        }
+    }
+
+    // Flush
+    decoder.send_eof().ok();
+    while decoder.receive_frame(&mut decoded).is_ok() {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        let actual_frame = if let (Some(pts), Some((_, tb))) = (decoded.pts(), &pts_base) {
+            let time_s = pts as f64 * tb.0 as f64 / tb.1 as f64;
+            (time_s * fps).round() as usize
+        } else {
+            frame_count
+        };
+        let image = frame_to_color_image(&decoded).ok();
+        let _ = tx.send(FrameDecodeResult {
+            frame_index: actual_frame,
+            image,
+        });
+        frame_count += 1;
+    }
 }
 
 /// Decode middle frame with timing info, for use in background threads.
