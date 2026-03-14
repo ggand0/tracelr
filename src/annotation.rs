@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
@@ -17,7 +17,7 @@ pub(crate) struct PromptCard {
 
 /// Annotation state: maps episode indices to prompt indices.
 pub(crate) struct AnnotationState {
-    pub annotations: HashMap<usize, usize>,
+    pub annotations: BTreeMap<usize, usize>,
     pub prompts: Vec<PromptCard>,
     pub dirty: bool,
 }
@@ -26,14 +26,14 @@ pub(crate) struct AnnotationState {
 struct AnnotationFile {
     dataset_root: String,
     prompts: Vec<String>,
-    annotations: HashMap<String, usize>,
+    annotations: BTreeMap<String, usize>,
 }
 
 impl AnnotationState {
     /// Create annotation state for the cube organization task (4 color prompts).
     pub fn new_cube_task() -> Self {
         Self {
-            annotations: HashMap::new(),
+            annotations: BTreeMap::new(),
             prompts: vec![
                 PromptCard {
                     label: "Red cube".into(),
