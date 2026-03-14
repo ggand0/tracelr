@@ -286,12 +286,35 @@ impl App {
         let mut step: Option<isize> = None;
         let mut jump: Option<usize> = None;
 
+        // Check if next episode is cached (for skate mode gating)
+        let next_cached = self
+            .episode_cache
+            .as_ref()
+            .map(|c| c.is_next_cached(self.current_episode, 1))
+            .unwrap_or(false);
+        let prev_cached = self
+            .episode_cache
+            .as_ref()
+            .map(|c| c.is_next_cached(self.current_episode, -1))
+            .unwrap_or(false);
+
         ctx.input(|i| {
+            // Normal navigation (key_pressed = once per press)
             if i.key_pressed(egui::Key::ArrowRight) || i.key_pressed(egui::Key::D) {
                 step = Some(1);
             }
             if i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::A) {
                 step = Some(-1);
+            }
+
+            // Skate mode: Shift+Arrow/AD held = advance every frame, gated on cache
+            if i.modifiers.shift {
+                if (i.key_down(egui::Key::ArrowRight) || i.key_down(egui::Key::D)) && next_cached {
+                    step = Some(1);
+                }
+                if (i.key_down(egui::Key::ArrowLeft) || i.key_down(egui::Key::A)) && prev_cached {
+                    step = Some(-1);
+                }
             }
             if i.key_pressed(egui::Key::Home) {
                 jump = Some(0);

@@ -165,7 +165,6 @@ impl EpisodeCache {
     }
 
     /// Check if the next episode in a given direction is cached.
-    #[allow(dead_code)] // Used for skate mode gating
     pub fn is_next_cached(&self, current: usize, delta: isize) -> bool {
         let next = if delta > 0 {
             current + delta as usize
