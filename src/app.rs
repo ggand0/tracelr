@@ -527,25 +527,64 @@ impl App {
         }
     }
 
+    /// Custom painted navigation slider matching viewskater-egui's accent style.
+    /// Draws a two-tone rail (accent fill up to handle, gray for the rest)
+    /// with a round accent handle.
     fn show_nav_slider(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
         let total = self
             .dataset
             .as_ref()
             .map(|ds| ds.episodes.len())
             .unwrap_or(0);
-        if total == 0 {
+        if total <= 1 {
             return;
         }
 
-        let mut ep = self.current_episode as f64;
-        let slider = egui::Slider::new(&mut ep, 0.0..=((total - 1) as f64))
-            .show_value(false)
-            .step_by(1.0);
-        let response = ui.add_sized([ui.available_width(), 20.0], slider);
-        if response.changed() {
-            let new_ep = ep as usize;
-            self.navigate_to_episode(new_ep, ctx);
+        let max = total - 1;
+        let accent = self.theme.accent;
+
+        let slider_width = ui.available_width();
+        let thickness = ui
+            .text_style_height(&egui::TextStyle::Body)
+            .max(ui.spacing().interact_size.y);
+        let (rect, response) =
+            ui.allocate_exact_size(egui::vec2(slider_width, thickness), egui::Sense::drag());
+
+        let handle_radius = rect.height() / 2.5;
+        let rail_radius = 4.0_f32;
+        let cy = rect.center().y;
+        let handle_range = (rect.left() + handle_radius)..=(rect.right() - handle_radius);
+
+        let mut idx = self.current_episode;
+        if let Some(pos) = response.interact_pointer_pos() {
+            let usable = rect.x_range().shrink(handle_radius);
+            let drag_t = ((pos.x - usable.min) / (usable.max - usable.min)).clamp(0.0, 1.0);
+            idx = (max as f32 * drag_t).round() as usize;
+            if idx != self.current_episode {
+                self.navigate_to_episode(idx, ctx);
+            }
         }
+
+        // Draw rail background
+        let rail = egui::Rect::from_min_max(
+            egui::pos2(rect.left(), cy - rail_radius),
+            egui::pos2(rect.right(), cy + rail_radius),
+        );
+        let t = idx as f32 / max as f32;
+        let handle_x = egui::lerp(handle_range, t);
+
+        ui.painter()
+            .rect_filled(rail, rail_radius, egui::Color32::from_gray(60));
+        // Filled portion up to handle
+        let filled = egui::Rect::from_min_max(rail.min, egui::pos2(handle_x, rail.max.y));
+        ui.painter().rect_filled(filled, rail_radius, accent);
+        // Handle
+        ui.painter().circle(
+            egui::pos2(handle_x, cy),
+            handle_radius,
+            accent,
+            egui::Stroke::NONE,
+        );
     }
 
     fn show_footer(&self, ui: &mut egui::Ui) {
