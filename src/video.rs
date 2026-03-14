@@ -446,6 +446,7 @@ pub(crate) fn decode_all_frames_gpu(
     }
 
     // 5. Demux + GPU decode loop
+    log::info!("GPU decode: starting demux+decode loop for {}", video_path.display());
     let mut frame_count: usize = 0;
     for (stream, packet) in ictx.packets() {
         if cancel.load(Ordering::Relaxed) {
@@ -462,6 +463,9 @@ pub(crate) fn decode_all_frames_gpu(
 
         match decoder.decode_frame(pkt_data) {
             Ok(output) => {
+                if frame_count == 0 {
+                    log::info!("GPU decode: first frame decoded, type={:?}", output.frame_type);
+                }
                 if !output.show_frame {
                     continue;
                 }

@@ -184,6 +184,11 @@ pub struct AV1Decoder {
     bitstream_memory: vk::DeviceMemory,
     bitstream_capacity: usize,
 
+    // Persistent staging buffer for readback (avoids per-frame alloc)
+    staging_buffer: vk::Buffer,
+    staging_memory: vk::DeviceMemory,
+    staging_capacity: usize,
+
     // Command pool
     command_pool: vk::CommandPool,
 
@@ -213,16 +218,8 @@ impl AV1Decoder {
             .application_name(c"lerobot-explorer")
             .api_version(vk::make_api_version(0, 1, 3, 0));
 
-        // Enable validation layers in debug builds
-        let layer_names: Vec<std::ffi::CString> = if cfg!(debug_assertions) {
-            vec![std::ffi::CString::new("VK_LAYER_KHRONOS_validation").unwrap()]
-        } else {
-            vec![]
-        };
-        let layer_ptrs: Vec<*const i8> = layer_names.iter().map(|n| n.as_ptr()).collect();
         let instance_create = vk::InstanceCreateInfo::default()
-            .application_info(&app_info)
-            .enabled_layer_names(&layer_ptrs);
+            .application_info(&app_info);
         let instance = unsafe { entry.create_instance(&instance_create, None)? };
 
         // 2. Find physical device with AV1 decode
@@ -469,7 +466,30 @@ impl AV1Decoder {
             allocate_bitstream_buffer(&device, &mem_props, &mut pl2, bitstream_capacity)?;
         log::info!("Allocated {}MB bitstream buffer", bitstream_capacity / (1024 * 1024));
 
-        // 10. Create command pool for video decode queue
+        // 10. Allocate persistent staging buffer for readback
+        let staging_capacity = (width * height * 3 / 2) as usize; // NV12 size
+        let staging_create = vk::BufferCreateInfo::default()
+            .size(staging_capacity as u64)
+            .usage(vk::BufferUsageFlags::TRANSFER_DST)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+        let staging_buffer = unsafe { device.create_buffer(&staging_create, None)? };
+        let staging_req = unsafe { device.get_buffer_memory_requirements(staging_buffer) };
+        let staging_mem_type = find_memory_type(
+            &mem_props,
+            staging_req.memory_type_bits,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        )
+        .ok_or_else(|| {
+            VulkanDecoderError::SessionCreationFailed("No host memory for staging".into())
+        })?;
+        let staging_alloc = vk::MemoryAllocateInfo::default()
+            .allocation_size(staging_req.size)
+            .memory_type_index(staging_mem_type);
+        let staging_memory = unsafe { device.allocate_memory(&staging_alloc, None)? };
+        unsafe { device.bind_buffer_memory(staging_buffer, staging_memory, 0)? };
+        log::info!("Allocated persistent staging buffer for readback");
+
+        // 11. Create command pool for video decode queue
         let pool_create = vk::CommandPoolCreateInfo::default()
             .queue_family_index(video_queue_family)
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
@@ -500,6 +520,9 @@ impl AV1Decoder {
             bitstream_buffer,
             bitstream_memory,
             bitstream_capacity,
+            staging_buffer,
+            staging_memory,
+            staging_capacity,
             command_pool,
             sequence_header: seq.clone(),
             width,
@@ -600,11 +623,16 @@ impl AV1Decoder {
         // vbi_to_dpb[vbi] gives the DPB slot index.
         // referenceNameSlotIndices[i] = DPB slot for reference name i+1.
         let mut ref_slot_indices: [i32; 7] = [-1; 7];
-        let mut reference_slots: Vec<vk::VideoReferenceSlotInfoKHR> = Vec::new();
-        let mut ref_pic_resources: Vec<vk::VideoPictureResourceInfoKHR> = Vec::new();
-        let mut seen_dpb_slots = std::collections::HashSet::new();
+
+        // Pre-allocate arrays to avoid reallocation (which would invalidate pointers).
+        // Max 8 unique DPB slots can be referenced.
+        let mut ref_pic_resources: [vk::VideoPictureResourceInfoKHR; 8] =
+            std::array::from_fn(|_| vk::VideoPictureResourceInfoKHR::default());
+        let mut ref_dpb_slots: [i32; 8] = [-1; 8];
+        let mut num_refs = 0usize;
 
         if !fh.is_intra_frame {
+            let mut seen_dpb_slots = [false; 8];
             for i in 0..7 {
                 let vbi_slot = fh.ref_frame_idx[i] as usize;
                 if vbi_slot < 8 {
@@ -612,32 +640,34 @@ impl AV1Decoder {
                     if dpb_slot >= 0 && (dpb_slot as usize) < 8 {
                         ref_slot_indices[i] = dpb_slot;
 
-                        // Add to reference_slots (deduplicated — multiple names can point to same DPB slot)
-                        if seen_dpb_slots.insert(dpb_slot as usize) {
-                            ref_pic_resources.push(
-                                vk::VideoPictureResourceInfoKHR::default()
-                                    .coded_offset(vk::Offset2D { x: 0, y: 0 })
-                                    .coded_extent(vk::Extent2D {
-                                        width: self.width,
-                                        height: self.height,
-                                    })
-                                    .base_array_layer(0)
-                                    .image_view_binding(self.dpb_views[dpb_slot as usize]),
-                            );
+                        if !seen_dpb_slots[dpb_slot as usize] {
+                            seen_dpb_slots[dpb_slot as usize] = true;
+                            ref_pic_resources[num_refs] = vk::VideoPictureResourceInfoKHR::default()
+                                .coded_offset(vk::Offset2D { x: 0, y: 0 })
+                                .coded_extent(vk::Extent2D {
+                                    width: self.width,
+                                    height: self.height,
+                                })
+                                .base_array_layer(0)
+                                .image_view_binding(self.dpb_views[dpb_slot as usize]);
+                            ref_dpb_slots[num_refs] = dpb_slot;
+                            num_refs += 1;
                         }
                     }
                 }
             }
-            for (idx, res) in ref_pic_resources.iter().enumerate() {
-                let dpb_slot = *seen_dpb_slots.iter().nth(idx).unwrap() as i32;
-                reference_slots.push(vk::VideoReferenceSlotInfoKHR {
-                    s_type: vk::StructureType::VIDEO_REFERENCE_SLOT_INFO_KHR,
-                    p_next: std::ptr::null(),
-                    slot_index: dpb_slot,
-                    p_picture_resource: res as *const _,
-                    _marker: std::marker::PhantomData,
-                });
-            }
+        }
+
+        // Build reference_slots from the fixed-size array (pointers are stable)
+        let mut reference_slots: Vec<vk::VideoReferenceSlotInfoKHR> = Vec::with_capacity(num_refs);
+        for i in 0..num_refs {
+            reference_slots.push(vk::VideoReferenceSlotInfoKHR {
+                s_type: vk::StructureType::VIDEO_REFERENCE_SLOT_INFO_KHR,
+                p_next: std::ptr::null(),
+                slot_index: ref_dpb_slots[i],
+                p_picture_resource: &ref_pic_resources[i] as *const _,
+                _marker: std::marker::PhantomData,
+            });
         }
 
         // 5. Build AV1 decode picture info
@@ -831,11 +861,15 @@ impl AV1Decoder {
             self.device.end_command_buffer(cmd)?;
 
             // Submit
+            // Submit with fence for synchronization
+            let fence_create = vk::FenceCreateInfo::default();
+            let fence = self.device.create_fence(&fence_create, None)?;
             let cmd_bufs_decode = [cmd];
             let submit = vk::SubmitInfo::default().command_buffers(&cmd_bufs_decode);
             self.device
-                .queue_submit(self.video_decode_queue, &[submit], vk::Fence::null())?;
-            self.device.queue_wait_idle(self.video_decode_queue)?;
+                .queue_submit(self.video_decode_queue, &[submit], fence)?;
+            self.device.wait_for_fences(&[fence], true, u64::MAX)?;
+            self.device.destroy_fence(fence, None);
 
             // Free command buffer
             self.device
@@ -887,6 +921,7 @@ impl AV1Decoder {
 
     /// Read back the decoded frame from GPU to CPU as NV12 data.
     /// Returns (y_plane, uv_plane) where y is width*height and uv is width*height/2.
+    /// Uses the persistent staging buffer (no per-frame allocation).
     pub fn read_back_nv12(
         &self,
         dpb_slot: usize,
@@ -895,34 +930,6 @@ impl AV1Decoder {
         let uv_size = (self.width * self.height / 2) as usize;
         let total_size = y_size + uv_size;
 
-        // Allocate staging buffer
-        let mem_props = unsafe {
-            self.instance
-                .get_physical_device_memory_properties(self.physical_device)
-        };
-        let staging_create = vk::BufferCreateInfo::default()
-            .size(total_size as u64)
-            .usage(vk::BufferUsageFlags::TRANSFER_DST)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE);
-        let staging_buf = unsafe { self.device.create_buffer(&staging_create, None)? };
-        let staging_req = unsafe { self.device.get_buffer_memory_requirements(staging_buf) };
-        let staging_mem_type = find_memory_type(
-            &mem_props,
-            staging_req.memory_type_bits,
-            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-        )
-        .ok_or_else(|| VulkanDecoderError::DecodeError("No host memory for readback".into()))?;
-        let staging_alloc = vk::MemoryAllocateInfo::default()
-            .allocation_size(staging_req.size)
-            .memory_type_index(staging_mem_type);
-        let staging_mem = unsafe { self.device.allocate_memory(&staging_alloc, None)? };
-        unsafe {
-            self.device
-                .bind_buffer_memory(staging_buf, staging_mem, 0)?
-        };
-
-        // Use the video decode command pool — the video decode queue on NVIDIA
-        // also supports transfer operations, and the image is owned by this queue.
         let alloc_info = vk::CommandBufferAllocateInfo::default()
             .command_pool(self.command_pool)
             .level(vk::CommandBufferLevel::PRIMARY)
@@ -937,7 +944,7 @@ impl AV1Decoder {
                     .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
             )?;
 
-            // Transition DPB image from VIDEO_DECODE_DPB to TRANSFER_SRC
+            // Transition DPB image: VIDEO_DECODE_DPB → TRANSFER_SRC
             let barrier = vk::ImageMemoryBarrier::default()
                 .old_layout(vk::ImageLayout::VIDEO_DECODE_DPB_KHR)
                 .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
@@ -964,7 +971,7 @@ impl AV1Decoder {
                 &[barrier],
             );
 
-            // Copy Y plane
+            // Copy Y and UV planes
             let y_region = vk::BufferImageCopy::default()
                 .buffer_offset(0)
                 .buffer_row_length(0)
@@ -981,7 +988,6 @@ impl AV1Decoder {
                     depth: 1,
                 });
 
-            // Copy UV plane
             let uv_region = vk::BufferImageCopy::default()
                 .buffer_offset(y_size as u64)
                 .buffer_row_length(0)
@@ -1002,11 +1008,11 @@ impl AV1Decoder {
                 cmd,
                 self.dpb_images[dpb_slot],
                 vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                staging_buf,
+                self.staging_buffer,
                 &[y_region, uv_region],
             );
 
-            // Transition back to VIDEO_DECODE_DPB for future decodes
+            // Transition back: TRANSFER_SRC → VIDEO_DECODE_DPB
             let barrier_back = vk::ImageMemoryBarrier::default()
                 .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
                 .new_layout(vk::ImageLayout::VIDEO_DECODE_DPB_KHR)
@@ -1035,36 +1041,30 @@ impl AV1Decoder {
 
             self.device.end_command_buffer(cmd)?;
 
-            // Submit on the video decode queue (same queue that owns the image)
+            let readback_fence = self.device.create_fence(&vk::FenceCreateInfo::default(), None)?;
             let cmd_bufs_submit = [cmd];
             let submit = vk::SubmitInfo::default().command_buffers(&cmd_bufs_submit);
             self.device
-                .queue_submit(self.video_decode_queue, &[submit], vk::Fence::null())?;
-            self.device.queue_wait_idle(self.video_decode_queue)?;
+                .queue_submit(self.video_decode_queue, &[submit], readback_fence)?;
+            self.device.wait_for_fences(&[readback_fence], true, u64::MAX)?;
+            self.device.destroy_fence(readback_fence, None);
 
-            self.device
-                .free_command_buffers(self.command_pool, &[cmd]);
+            self.device.free_command_buffers(self.command_pool, &[cmd]);
         }
 
-        // Read back
+        // Map staging buffer and read
         let mut y_data = vec![0u8; y_size];
         let mut uv_data = vec![0u8; uv_size];
         unsafe {
             let ptr = self.device.map_memory(
-                staging_mem,
+                self.staging_memory,
                 0,
                 total_size as u64,
                 vk::MemoryMapFlags::empty(),
             )? as *const u8;
             std::ptr::copy_nonoverlapping(ptr, y_data.as_mut_ptr(), y_size);
             std::ptr::copy_nonoverlapping(ptr.add(y_size), uv_data.as_mut_ptr(), uv_size);
-            self.device.unmap_memory(staging_mem);
-        }
-
-        // Cleanup staging
-        unsafe {
-            self.device.destroy_buffer(staging_buf, None);
-            self.device.free_memory(staging_mem, None);
+            self.device.unmap_memory(self.staging_memory);
         }
 
         Ok((y_data, uv_data))
@@ -1122,6 +1122,8 @@ impl Drop for AV1Decoder {
                 .destroy_command_pool(self.command_pool, None);
             self.device.destroy_buffer(self.bitstream_buffer, None);
             self.device.free_memory(self.bitstream_memory, None);
+            self.device.destroy_buffer(self.staging_buffer, None);
+            self.device.free_memory(self.staging_memory, None);
             self.device
                 .destroy_image_view(self.output_view, None);
             self.device.destroy_image(self.output_image, None);
