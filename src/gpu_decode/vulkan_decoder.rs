@@ -213,7 +213,16 @@ impl AV1Decoder {
             .application_name(c"lerobot-explorer")
             .api_version(vk::make_api_version(0, 1, 3, 0));
 
-        let instance_create = vk::InstanceCreateInfo::default().application_info(&app_info);
+        // Enable validation layers in debug builds
+        let layer_names: Vec<std::ffi::CString> = if cfg!(debug_assertions) {
+            vec![std::ffi::CString::new("VK_LAYER_KHRONOS_validation").unwrap()]
+        } else {
+            vec![]
+        };
+        let layer_ptrs: Vec<*const i8> = layer_names.iter().map(|n| n.as_ptr()).collect();
+        let instance_create = vk::InstanceCreateInfo::default()
+            .application_info(&app_info)
+            .enabled_layer_names(&layer_ptrs);
         let instance = unsafe { entry.create_instance(&instance_create, None)? };
 
         // 2. Find physical device with AV1 decode
@@ -642,6 +651,67 @@ impl AV1Decoder {
         pic_flags.set_frame_size_override_flag(fh.frame_size_override_flag as u32);
         pic_flags.set_allow_intrabc(fh.allow_intrabc as u32);
 
+        // Build required sub-structures. These must stay alive for the decode command.
+        // For fields we don't fully parse, use safe defaults.
+        let sb_size: u32 = if self.sequence_header.use_128x128_superblock { 128 } else { 64 };
+        let mi_cols = (self.width + 3) / 4; // 4-pixel MI units
+        let mi_rows = (self.height + 3) / 4;
+        let sb_cols = (mi_cols + (sb_size / 4) - 1) / (sb_size / 4);
+        let sb_rows = (mi_rows + (sb_size / 4) - 1) / (sb_size / 4);
+
+        // Single tile covering entire frame
+        let mi_col_starts: [u16; 2] = [0, mi_cols as u16];
+        let mi_row_starts: [u16; 2] = [0, mi_rows as u16];
+        let width_in_sbs: [u16; 1] = [sb_cols.saturating_sub(1) as u16];
+        let height_in_sbs: [u16; 1] = [sb_rows.saturating_sub(1) as u16];
+
+        let tile_info = vk::native::StdVideoAV1TileInfo {
+            flags: unsafe { std::mem::zeroed() },
+            TileCols: 1,
+            TileRows: 1,
+            context_update_tile_id: 0,
+            tile_size_bytes_minus_1: 0,
+            reserved1: [0; 7],
+            pMiColStarts: mi_col_starts.as_ptr(),
+            pMiRowStarts: mi_row_starts.as_ptr(),
+            pWidthInSbsMinus1: width_in_sbs.as_ptr(),
+            pHeightInSbsMinus1: height_in_sbs.as_ptr(),
+        };
+
+        let quantization = vk::native::StdVideoAV1Quantization {
+            flags: unsafe { std::mem::zeroed() },
+            base_q_idx: fh.base_q_idx,
+            DeltaQYDc: fh.delta_q_y_dc,
+            DeltaQUDc: fh.delta_q_u_dc,
+            DeltaQUAc: fh.delta_q_u_ac,
+            DeltaQVDc: fh.delta_q_v_dc,
+            DeltaQVAc: fh.delta_q_v_ac,
+            qm_y: 0,
+            qm_u: 0,
+            qm_v: 0,
+        };
+
+        let loop_filter = vk::native::StdVideoAV1LoopFilter {
+            flags: unsafe { std::mem::zeroed() },
+            loop_filter_level: fh.loop_filter_level,
+            loop_filter_sharpness: fh.loop_filter_sharpness,
+            update_ref_delta: 0,
+            loop_filter_ref_deltas: [1, 0, 0, 0, -1, 0, -1, -1], // AV1 defaults
+            update_mode_delta: 0,
+            loop_filter_mode_deltas: [0, 0],
+        };
+
+        let cdef: vk::native::StdVideoAV1CDEF = unsafe { std::mem::zeroed() };
+
+        let loop_restoration = vk::native::StdVideoAV1LoopRestoration {
+            FrameRestorationType: [0; 3], // RESTORE_NONE
+            LoopRestorationSize: [256, 256, 256],
+        };
+
+        let global_motion: vk::native::StdVideoAV1GlobalMotion = unsafe { std::mem::zeroed() };
+
+        let segmentation: vk::native::StdVideoAV1Segmentation = unsafe { std::mem::zeroed() };
+
         let std_pic_info = vk::native::StdVideoDecodeAV1PictureInfo {
             flags: pic_flags,
             frame_type: fh.frame_type as vk::native::StdVideoAV1FrameType,
@@ -659,23 +729,34 @@ impl AV1Decoder {
             reserved2: [0; 3],
             OrderHints: self.vbi_order_hint,
             expectedFrameId: [0; 8],
-            pTileInfo: std::ptr::null(),
-            pQuantization: std::ptr::null(),
-            pSegmentation: std::ptr::null(),
-            pLoopFilter: std::ptr::null(),
-            pCDEF: std::ptr::null(),
-            pLoopRestoration: std::ptr::null(),
-            pGlobalMotion: std::ptr::null(),
+            pTileInfo: &tile_info,
+            pQuantization: &quantization,
+            pSegmentation: &segmentation,
+            pLoopFilter: &loop_filter,
+            pCDEF: &cdef,
+            pLoopRestoration: &loop_restoration,
+            pGlobalMotion: &global_motion,
             pFilmGrain: std::ptr::null(),
         };
 
         // For VkVideoDecodeAV1PictureInfoKHR, we need frame header offset and tile info.
         // For a Frame OBU (combined header + tiles), the entire OBU data is the bitstream.
         // The tile info is embedded — the GPU parses tile offsets from the bitstream.
+        // For a Frame OBU (combined header + tile group), the tile data
+        // occupies everything after the frame header. For single-tile frames
+        // at our resolution, there's one tile covering the whole frame.
+        // The tile offset is relative to the start of the bitstream buffer.
+        // For the Frame OBU, the data starts at data_offset of the OBU.
+        // We provide offset 0 and the full size as the tile.
+        let tile_offsets = [0u32]; // relative to the OBU data start
+        let tile_sizes = [data_size as u32]; // entire packet is the tile
+
         let mut av1_pic_info = vk::VideoDecodeAV1PictureInfoKHR::default()
             .std_picture_info(&std_pic_info)
             .reference_name_slot_indices(ref_slot_indices)
-            .frame_header_offset(frame_header_offset_in_obu as u32);
+            .frame_header_offset(frame_header_offset_in_obu as u32)
+            .tile_offsets(&tile_offsets)
+            .tile_sizes(&tile_sizes);
 
         // 6. Destination picture resource
         let dst_pic_resource = vk::VideoPictureResourceInfoKHR::default()
@@ -840,13 +921,10 @@ impl AV1Decoder {
                 .bind_buffer_memory(staging_buf, staging_mem, 0)?
         };
 
-        // Record copy command (need transfer queue or general queue)
-        let pool_create = vk::CommandPoolCreateInfo::default()
-            .queue_family_index(self.transfer_queue_family)
-            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
-        let xfer_pool = unsafe { self.device.create_command_pool(&pool_create, None)? };
+        // Use the video decode command pool — the video decode queue on NVIDIA
+        // also supports transfer operations, and the image is owned by this queue.
         let alloc_info = vk::CommandBufferAllocateInfo::default()
-            .command_pool(xfer_pool)
+            .command_pool(self.command_pool)
             .level(vk::CommandBufferLevel::PRIMARY)
             .command_buffer_count(1);
         let cmd_bufs = unsafe { self.device.allocate_command_buffers(&alloc_info)? };
@@ -859,9 +937,38 @@ impl AV1Decoder {
                     .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
             )?;
 
+            // Transition DPB image from VIDEO_DECODE_DPB to TRANSFER_SRC
+            let barrier = vk::ImageMemoryBarrier::default()
+                .old_layout(vk::ImageLayout::VIDEO_DECODE_DPB_KHR)
+                .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .image(self.dpb_images[dpb_slot])
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .src_access_mask(vk::AccessFlags::NONE)
+                .dst_access_mask(vk::AccessFlags::TRANSFER_READ);
+
+            self.device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::ALL_COMMANDS,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[barrier],
+            );
+
             // Copy Y plane
             let y_region = vk::BufferImageCopy::default()
                 .buffer_offset(0)
+                .buffer_row_length(0)
+                .buffer_image_height(0)
                 .image_subresource(vk::ImageSubresourceLayers {
                     aspect_mask: vk::ImageAspectFlags::PLANE_0,
                     mip_level: 0,
@@ -877,6 +984,8 @@ impl AV1Decoder {
             // Copy UV plane
             let uv_region = vk::BufferImageCopy::default()
                 .buffer_offset(y_size as u64)
+                .buffer_row_length(0)
+                .buffer_image_height(0)
                 .image_subresource(vk::ImageSubresourceLayers {
                     aspect_mask: vk::ImageAspectFlags::PLANE_1,
                     mip_level: 0,
@@ -892,18 +1001,49 @@ impl AV1Decoder {
             self.device.cmd_copy_image_to_buffer(
                 cmd,
                 self.dpb_images[dpb_slot],
-                vk::ImageLayout::VIDEO_DECODE_DPB_KHR,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
                 staging_buf,
                 &[y_region, uv_region],
             );
 
+            // Transition back to VIDEO_DECODE_DPB for future decodes
+            let barrier_back = vk::ImageMemoryBarrier::default()
+                .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                .new_layout(vk::ImageLayout::VIDEO_DECODE_DPB_KHR)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .image(self.dpb_images[dpb_slot])
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .src_access_mask(vk::AccessFlags::TRANSFER_READ)
+                .dst_access_mask(vk::AccessFlags::NONE);
+
+            self.device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::ALL_COMMANDS,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[barrier_back],
+            );
+
             self.device.end_command_buffer(cmd)?;
 
+            // Submit on the video decode queue (same queue that owns the image)
             let cmd_bufs_submit = [cmd];
             let submit = vk::SubmitInfo::default().command_buffers(&cmd_bufs_submit);
             self.device
-                .queue_submit(self.transfer_queue, &[submit], vk::Fence::null())?;
-            self.device.queue_wait_idle(self.transfer_queue)?;
+                .queue_submit(self.video_decode_queue, &[submit], vk::Fence::null())?;
+            self.device.queue_wait_idle(self.video_decode_queue)?;
+
+            self.device
+                .free_command_buffers(self.command_pool, &[cmd]);
         }
 
         // Read back
@@ -921,11 +1061,10 @@ impl AV1Decoder {
             self.device.unmap_memory(staging_mem);
         }
 
-        // Cleanup
+        // Cleanup staging
         unsafe {
             self.device.destroy_buffer(staging_buf, None);
             self.device.free_memory(staging_mem, None);
-            self.device.destroy_command_pool(xfer_pool, None);
         }
 
         Ok((y_data, uv_data))
@@ -1071,7 +1210,8 @@ fn allocate_dpb_images(
             .tiling(vk::ImageTiling::OPTIMAL)
             .usage(
                 vk::ImageUsageFlags::VIDEO_DECODE_DPB_KHR
-                    | vk::ImageUsageFlags::VIDEO_DECODE_DST_KHR,
+                    | vk::ImageUsageFlags::VIDEO_DECODE_DST_KHR
+                    | vk::ImageUsageFlags::TRANSFER_SRC,
             )
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             .push_next(profile_list);

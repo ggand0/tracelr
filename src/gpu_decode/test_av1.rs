@@ -136,6 +136,12 @@ mod tests {
             let name = unsafe { CStr::from_ptr(props.device_name.as_ptr()) };
             eprintln!("Device: {:?}", name);
 
+            // Print all queue family flags
+            let qfams = unsafe { instance.get_physical_device_queue_family_properties(*pdev) };
+            for (qi, qp) in qfams.iter().enumerate() {
+                eprintln!("  Queue family {}: flags={:?}, count={}", qi, qp.queue_flags, qp.queue_count);
+            }
+
             match vulkan_decoder::check_av1_decode_support(&instance, *pdev) {
                 Ok((queue_family, _)) => {
                     eprintln!("  Video decode queue family: {}", queue_family);
@@ -258,14 +264,19 @@ mod tests {
                     match decoder.read_back_nv12(output.dpb_slot) {
                         Ok((y, uv)) => {
                             eprintln!("NV12 readback: Y={} bytes, UV={} bytes", y.len(), uv.len());
+                            let y_nonzero = y.iter().filter(|&&b| b != 0).count();
+                            let uv_nonzero = uv.iter().filter(|&&b| b != 0).count();
+                            eprintln!("Y non-zero: {} / {}", y_nonzero, y.len());
+                            eprintln!("UV non-zero: {} / {}", uv_nonzero, uv.len());
+                            eprintln!("UV first 32 bytes: {:?}", &uv[..32.min(uv.len())]);
+
                             let (w, h) = decoder.dimensions();
                             let rgba = vulkan_decoder::AV1Decoder::nv12_to_rgba(&y, &uv, w, h);
                             eprintln!("RGBA: {} bytes ({}x{})", rgba.len(), w, h);
                             assert_eq!(rgba.len(), (w * h * 4) as usize);
 
-                            // Check that the data isn't all zeros
                             let non_zero = rgba.iter().filter(|&&b| b != 0).count();
-                            eprintln!("Non-zero bytes: {} / {}", non_zero, rgba.len());
+                            eprintln!("RGBA non-zero bytes: {} / {}", non_zero, rgba.len());
                             assert!(non_zero > 1000, "Decoded frame appears to be empty");
                         }
                         Err(e) => eprintln!("Readback failed: {} (expected — image layout may need transition)", e),
