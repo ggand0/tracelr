@@ -159,4 +159,48 @@ mod tests {
 
         unsafe { instance.destroy_instance(None) };
     }
+
+    #[test]
+    fn test_create_av1_decoder() {
+        let video_path = match get_test_video() {
+            Some(p) => p,
+            None => {
+                eprintln!("Skipping test: no test video available");
+                return;
+            }
+        };
+
+        // Parse sequence header from the video
+        ffmpeg_next::init().unwrap();
+        let mut ictx = ffmpeg_next::format::input(&video_path).unwrap();
+        let stream = ictx.streams().best(ffmpeg_next::media::Type::Video).unwrap();
+        let decoder_params = stream.parameters();
+        let ctx = ffmpeg_next::codec::context::Context::from_parameters(decoder_params).unwrap();
+
+        let extradata = unsafe {
+            let ptr = (*ctx.as_ptr()).extradata;
+            let size = (*ctx.as_ptr()).extradata_size as usize;
+            std::slice::from_raw_parts(ptr, size)
+        };
+
+        // Skip AV1CodecConfigurationRecord 4-byte header
+        let obu_data = &extradata[4..];
+        let obus = av1_obu::parse_obu_headers(obu_data).unwrap();
+        let seq_obu = obus.iter().find(|o| o.obu_type == av1_obu::ObuType::SequenceHeader).unwrap();
+        let seq = av1_obu::parse_sequence_header(&obu_data[seq_obu.data_offset..seq_obu.data_offset + seq_obu.data_size]).unwrap();
+
+        eprintln!("Creating AV1 decoder for {}x{}", seq.max_frame_width_minus_1 + 1, seq.max_frame_height_minus_1 + 1);
+
+        match vulkan_decoder::AV1Decoder::new(&seq) {
+            Ok(decoder) => {
+                let (w, h) = decoder.dimensions();
+                eprintln!("AV1 decoder created successfully: {}x{}", w, h);
+                assert_eq!(w, 640);
+                assert_eq!(h, 480);
+            }
+            Err(e) => {
+                panic!("Failed to create AV1 decoder: {}", e);
+            }
+        }
+    }
 }
