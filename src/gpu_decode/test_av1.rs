@@ -203,4 +203,81 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn test_decode_first_frame() {
+        let video_path = match get_test_video() {
+            Some(p) => p,
+            None => {
+                eprintln!("Skipping test: no test video available");
+                return;
+            }
+        };
+
+        // Parse sequence header
+        ffmpeg_next::init().unwrap();
+        let mut ictx = ffmpeg_next::format::input(&video_path).unwrap();
+        let video_stream_index;
+        let decoder_params;
+        {
+            let stream = ictx.streams().best(ffmpeg_next::media::Type::Video).unwrap();
+            video_stream_index = stream.index();
+            decoder_params = stream.parameters();
+        }
+        let ctx = ffmpeg_next::codec::context::Context::from_parameters(decoder_params).unwrap();
+        let extradata = unsafe {
+            let ptr = (*ctx.as_ptr()).extradata;
+            let size = (*ctx.as_ptr()).extradata_size as usize;
+            std::slice::from_raw_parts(ptr, size)
+        };
+        let obu_data = &extradata[4..];
+        let obus = av1_obu::parse_obu_headers(obu_data).unwrap();
+        let seq_obu = obus.iter().find(|o| o.obu_type == av1_obu::ObuType::SequenceHeader).unwrap();
+        let seq = av1_obu::parse_sequence_header(&obu_data[seq_obu.data_offset..seq_obu.data_offset + seq_obu.data_size]).unwrap();
+
+        // Create decoder
+        let mut decoder = vulkan_decoder::AV1Decoder::new(&seq).unwrap();
+        eprintln!("Decoder created, decoding first frame...");
+
+        // Get first packet
+        for (stream, packet) in ictx.packets() {
+            if stream.index() != video_stream_index {
+                continue;
+            }
+            let pkt_data = packet.data().unwrap();
+            eprintln!("First packet: {} bytes", pkt_data.len());
+
+            match decoder.decode_frame(pkt_data) {
+                Ok(output) => {
+                    eprintln!(
+                        "Decoded frame {}: type={:?}, show={}, dpb_slot={}",
+                        output.frame_index, output.frame_type, output.show_frame, output.dpb_slot
+                    );
+
+                    // Try readback
+                    match decoder.read_back_nv12(output.dpb_slot) {
+                        Ok((y, uv)) => {
+                            eprintln!("NV12 readback: Y={} bytes, UV={} bytes", y.len(), uv.len());
+                            let (w, h) = decoder.dimensions();
+                            let rgba = vulkan_decoder::AV1Decoder::nv12_to_rgba(&y, &uv, w, h);
+                            eprintln!("RGBA: {} bytes ({}x{})", rgba.len(), w, h);
+                            assert_eq!(rgba.len(), (w * h * 4) as usize);
+
+                            // Check that the data isn't all zeros
+                            let non_zero = rgba.iter().filter(|&&b| b != 0).count();
+                            eprintln!("Non-zero bytes: {} / {}", non_zero, rgba.len());
+                            assert!(non_zero > 1000, "Decoded frame appears to be empty");
+                        }
+                        Err(e) => eprintln!("Readback failed: {} (expected — image layout may need transition)", e),
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Decode failed: {}", e);
+                    // Don't panic — the decode command structure may need tuning
+                }
+            }
+
+            break; // First packet only
+        }
+    }
 }

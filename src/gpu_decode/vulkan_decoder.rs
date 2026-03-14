@@ -495,7 +495,452 @@ impl AV1Decoder {
         (self.width, self.height)
     }
 
-    // TODO: decode_frame(), read_back_output(), export_to_wgpu()
+    /// Decode a single AV1 frame from packet data.
+    ///
+    /// `packet_data` is the raw AV1 OBU data for one frame (from ffmpeg demuxer).
+    /// The frame is decoded on the GPU into the output image.
+    /// Returns the frame index and whether it should be displayed (show_frame).
+    pub fn decode_frame(
+        &mut self,
+        packet_data: &[u8],
+    ) -> Result<DecodeOutput, VulkanDecoderError> {
+        // 1. Parse OBUs to find Frame/FrameHeader and tile data
+        let obus = av1_obu::parse_obu_headers(packet_data)
+            .map_err(|e| VulkanDecoderError::DecodeError(format!("OBU parse: {}", e)))?;
+
+        let mut frame_header: Option<FrameHeader> = None;
+        let mut frame_obu_offset = 0usize;
+        let mut frame_header_offset_in_obu = 0usize;
+
+        for obu in &obus {
+            match obu.obu_type {
+                av1_obu::ObuType::Frame => {
+                    // Frame OBU = frame header + tile group combined
+                    let payload =
+                        &packet_data[obu.data_offset..obu.data_offset + obu.data_size];
+                    frame_header = Some(
+                        av1_obu::parse_frame_header(payload, &self.sequence_header)
+                            .map_err(|e| {
+                                VulkanDecoderError::DecodeError(format!(
+                                    "Frame header parse: {}",
+                                    e
+                                ))
+                            })?,
+                    );
+                    frame_obu_offset = obu.offset;
+                    frame_header_offset_in_obu = obu.data_offset - obu.offset;
+                }
+                av1_obu::ObuType::FrameHeader => {
+                    let payload =
+                        &packet_data[obu.data_offset..obu.data_offset + obu.data_size];
+                    frame_header = Some(
+                        av1_obu::parse_frame_header(payload, &self.sequence_header)
+                            .map_err(|e| {
+                                VulkanDecoderError::DecodeError(format!(
+                                    "Frame header parse: {}",
+                                    e
+                                ))
+                            })?,
+                    );
+                    frame_obu_offset = obu.offset;
+                    frame_header_offset_in_obu = obu.data_offset - obu.offset;
+                }
+                _ => {}
+            }
+        }
+
+        let fh = frame_header
+            .ok_or_else(|| VulkanDecoderError::DecodeError("No frame header found".into()))?;
+
+        // 2. Upload bitstream to GPU buffer
+        let data_size = packet_data.len();
+        if data_size > self.bitstream_capacity {
+            return Err(VulkanDecoderError::DecodeError(format!(
+                "Packet too large: {} > {}",
+                data_size, self.bitstream_capacity
+            )));
+        }
+
+        unsafe {
+            let ptr = self.device.map_memory(
+                self.bitstream_memory,
+                0,
+                data_size as u64,
+                vk::MemoryMapFlags::empty(),
+            )? as *mut u8;
+            std::ptr::copy_nonoverlapping(packet_data.as_ptr(), ptr, data_size);
+            self.device.unmap_memory(self.bitstream_memory);
+        }
+
+        // 3. Determine DPB slot for this frame's output
+        let dst_slot = self.allocate_dpb_slot()?;
+
+        // 4. Build reference slot info for active references
+        let mut ref_slot_indices: [i32; 7] = [-1; 7]; // VK_MAX_VIDEO_AV1_REFERENCES_PER_FRAME_KHR = 7
+        let mut reference_slots: Vec<vk::VideoReferenceSlotInfoKHR> = Vec::new();
+
+        // Build reference picture resources (must live long enough for the command)
+        let mut ref_pic_resources: Vec<vk::VideoPictureResourceInfoKHR> = Vec::new();
+        if !fh.is_intra_frame {
+            for i in 0..7 {
+                let ref_idx = fh.ref_frame_idx[i] as usize;
+                if ref_idx < 8 && self.dpb_slot_active[ref_idx] {
+                    ref_slot_indices[i] = ref_idx as i32;
+                    ref_pic_resources.push(
+                        vk::VideoPictureResourceInfoKHR::default()
+                            .coded_offset(vk::Offset2D { x: 0, y: 0 })
+                            .coded_extent(vk::Extent2D {
+                                width: self.width,
+                                height: self.height,
+                            })
+                            .base_array_layer(0)
+                            .image_view_binding(self.dpb_views[ref_idx]),
+                    );
+                }
+            }
+            for (i, res) in ref_pic_resources.iter().enumerate() {
+                reference_slots.push(vk::VideoReferenceSlotInfoKHR {
+                    s_type: vk::StructureType::VIDEO_REFERENCE_SLOT_INFO_KHR,
+                    p_next: std::ptr::null(),
+                    slot_index: fh.ref_frame_idx
+                        .iter()
+                        .filter(|&&idx| (idx as usize) < 8 && self.dpb_slot_active[idx as usize])
+                        .nth(i)
+                        .map(|&idx| idx as i32)
+                        .unwrap_or(-1),
+                    p_picture_resource: res as *const _,
+                    _marker: std::marker::PhantomData,
+                });
+            }
+        }
+
+        // 5. Build AV1 decode picture info
+        // Build flags using setters instead of new_bitfield_1 (30 args is error-prone)
+        let mut pic_flags = unsafe { std::mem::zeroed::<vk::native::StdVideoDecodeAV1PictureInfoFlags>() };
+        pic_flags.set_error_resilient_mode(fh.error_resilient_mode as u32);
+        pic_flags.set_disable_cdf_update(fh.disable_cdf_update as u32);
+        pic_flags.set_use_superres((fh.use_superres && fh.coded_denom != 8) as u32);
+        pic_flags.set_allow_screen_content_tools(fh.allow_screen_content_tools as u32);
+        pic_flags.set_force_integer_mv(fh.force_integer_mv as u32);
+        pic_flags.set_frame_size_override_flag(fh.frame_size_override_flag as u32);
+        pic_flags.set_allow_intrabc(fh.allow_intrabc as u32);
+
+        let std_pic_info = vk::native::StdVideoDecodeAV1PictureInfo {
+            flags: pic_flags,
+            frame_type: fh.frame_type as vk::native::StdVideoAV1FrameType,
+            current_frame_id: fh.current_frame_id,
+            OrderHint: fh.order_hint,
+            primary_ref_frame: fh.primary_ref_frame,
+            refresh_frame_flags: fh.refresh_frame_flags,
+            reserved1: 0,
+            interpolation_filter: 0, // EIGHTTAP_REGULAR
+            TxMode: 2, // TX_MODE_SELECT
+            delta_q_res: 0,
+            delta_lf_res: 0,
+            SkipModeFrame: [0; 2],
+            coded_denom: fh.coded_denom,
+            reserved2: [0; 3],
+            OrderHints: fh.ref_order_hint,
+            expectedFrameId: [0; 8],
+            pTileInfo: std::ptr::null(),
+            pQuantization: std::ptr::null(),
+            pSegmentation: std::ptr::null(),
+            pLoopFilter: std::ptr::null(),
+            pCDEF: std::ptr::null(),
+            pLoopRestoration: std::ptr::null(),
+            pGlobalMotion: std::ptr::null(),
+            pFilmGrain: std::ptr::null(),
+        };
+
+        // For VkVideoDecodeAV1PictureInfoKHR, we need frame header offset and tile info.
+        // For a Frame OBU (combined header + tiles), the entire OBU data is the bitstream.
+        // The tile info is embedded — the GPU parses tile offsets from the bitstream.
+        let mut av1_pic_info = vk::VideoDecodeAV1PictureInfoKHR::default()
+            .std_picture_info(&std_pic_info)
+            .reference_name_slot_indices(ref_slot_indices)
+            .frame_header_offset(frame_header_offset_in_obu as u32);
+
+        // 6. Destination picture resource
+        let dst_pic_resource = vk::VideoPictureResourceInfoKHR::default()
+            .coded_offset(vk::Offset2D { x: 0, y: 0 })
+            .coded_extent(vk::Extent2D {
+                width: self.width,
+                height: self.height,
+            })
+            .base_array_layer(0)
+            .image_view_binding(self.dpb_views[dst_slot]);
+
+        // Setup slot for the decoded picture
+        let dst_slot_info = vk::VideoReferenceSlotInfoKHR {
+            s_type: vk::StructureType::VIDEO_REFERENCE_SLOT_INFO_KHR,
+            p_next: std::ptr::null(),
+            slot_index: dst_slot as i32,
+            p_picture_resource: &dst_pic_resource as *const _,
+            _marker: std::marker::PhantomData,
+        };
+
+        // 7. Build decode info
+        let decode_info = vk::VideoDecodeInfoKHR::default()
+            .src_buffer(self.bitstream_buffer)
+            .src_buffer_offset(0)
+            .src_buffer_range(data_size as u64)
+            .dst_picture_resource(dst_pic_resource)
+            .setup_reference_slot(&dst_slot_info)
+            .reference_slots(&reference_slots)
+            .push_next(&mut av1_pic_info);
+
+        // 8. Record and submit command buffer
+        let alloc_info = vk::CommandBufferAllocateInfo::default()
+            .command_pool(self.command_pool)
+            .level(vk::CommandBufferLevel::PRIMARY)
+            .command_buffer_count(1);
+        let cmd_bufs = unsafe { self.device.allocate_command_buffers(&alloc_info)? };
+        let cmd = cmd_bufs[0];
+
+        unsafe {
+            self.device.begin_command_buffer(
+                cmd,
+                &vk::CommandBufferBeginInfo::default()
+                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+            )?;
+
+            // Begin video coding
+            let begin_info = vk::VideoBeginCodingInfoKHR::default()
+                .video_session(self.video_session)
+                .video_session_parameters(self.session_params)
+                .reference_slots(&reference_slots);
+
+            (self.video_queue_fn.fp().cmd_begin_video_coding_khr)(cmd, &begin_info);
+
+            // Reset DPB for key frames
+            if fh.frame_type == av1_obu::FrameType::KeyFrame {
+                let control = vk::VideoCodingControlInfoKHR::default()
+                    .flags(vk::VideoCodingControlFlagsKHR::RESET);
+                (self.video_queue_fn.fp().cmd_control_video_coding_khr)(cmd, &control);
+            }
+
+            // Decode
+            let decode_fn = ash::khr::video_decode_queue::Device::new(
+                &self.instance,
+                &self.device,
+            );
+            (decode_fn.fp().cmd_decode_video_khr)(cmd, &decode_info);
+
+            // End video coding
+            let end_info = vk::VideoEndCodingInfoKHR::default();
+            (self.video_queue_fn.fp().cmd_end_video_coding_khr)(cmd, &end_info);
+
+            self.device.end_command_buffer(cmd)?;
+
+            // Submit
+            let cmd_bufs_decode = [cmd];
+            let submit = vk::SubmitInfo::default().command_buffers(&cmd_bufs_decode);
+            self.device
+                .queue_submit(self.video_decode_queue, &[submit], vk::Fence::null())?;
+            self.device.queue_wait_idle(self.video_decode_queue)?;
+
+            // Free command buffer
+            self.device
+                .free_command_buffers(self.command_pool, &[cmd]);
+        }
+
+        // 9. Update DPB state from refresh_frame_flags
+        for i in 0..8 {
+            if fh.refresh_frame_flags & (1 << i) != 0 {
+                self.dpb_slot_active[i] = true;
+            }
+        }
+
+        self.frame_count += 1;
+
+        Ok(DecodeOutput {
+            frame_index: self.frame_count - 1,
+            show_frame: fh.show_frame,
+            frame_type: fh.frame_type,
+            dpb_slot: dst_slot,
+        })
+    }
+
+    /// Allocate a DPB slot for the decoded frame.
+    fn allocate_dpb_slot(&mut self) -> Result<usize, VulkanDecoderError> {
+        // Find first inactive slot, or reuse slot 0
+        for i in 0..8 {
+            if !self.dpb_slot_active[i] {
+                return Ok(i);
+            }
+        }
+        // All slots active — reuse oldest (slot 0)
+        Ok(0)
+    }
+
+    /// Read back the decoded frame from GPU to CPU as NV12 data.
+    /// Returns (y_plane, uv_plane) where y is width*height and uv is width*height/2.
+    pub fn read_back_nv12(
+        &self,
+        dpb_slot: usize,
+    ) -> Result<(Vec<u8>, Vec<u8>), VulkanDecoderError> {
+        let y_size = (self.width * self.height) as usize;
+        let uv_size = (self.width * self.height / 2) as usize;
+        let total_size = y_size + uv_size;
+
+        // Allocate staging buffer
+        let mem_props = unsafe {
+            self.instance
+                .get_physical_device_memory_properties(self.physical_device)
+        };
+        let staging_create = vk::BufferCreateInfo::default()
+            .size(total_size as u64)
+            .usage(vk::BufferUsageFlags::TRANSFER_DST)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+        let staging_buf = unsafe { self.device.create_buffer(&staging_create, None)? };
+        let staging_req = unsafe { self.device.get_buffer_memory_requirements(staging_buf) };
+        let staging_mem_type = find_memory_type(
+            &mem_props,
+            staging_req.memory_type_bits,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        )
+        .ok_or_else(|| VulkanDecoderError::DecodeError("No host memory for readback".into()))?;
+        let staging_alloc = vk::MemoryAllocateInfo::default()
+            .allocation_size(staging_req.size)
+            .memory_type_index(staging_mem_type);
+        let staging_mem = unsafe { self.device.allocate_memory(&staging_alloc, None)? };
+        unsafe {
+            self.device
+                .bind_buffer_memory(staging_buf, staging_mem, 0)?
+        };
+
+        // Record copy command (need transfer queue or general queue)
+        let pool_create = vk::CommandPoolCreateInfo::default()
+            .queue_family_index(self.transfer_queue_family)
+            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
+        let xfer_pool = unsafe { self.device.create_command_pool(&pool_create, None)? };
+        let alloc_info = vk::CommandBufferAllocateInfo::default()
+            .command_pool(xfer_pool)
+            .level(vk::CommandBufferLevel::PRIMARY)
+            .command_buffer_count(1);
+        let cmd_bufs = unsafe { self.device.allocate_command_buffers(&alloc_info)? };
+        let cmd = cmd_bufs[0];
+
+        unsafe {
+            self.device.begin_command_buffer(
+                cmd,
+                &vk::CommandBufferBeginInfo::default()
+                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+            )?;
+
+            // Copy Y plane
+            let y_region = vk::BufferImageCopy::default()
+                .buffer_offset(0)
+                .image_subresource(vk::ImageSubresourceLayers {
+                    aspect_mask: vk::ImageAspectFlags::PLANE_0,
+                    mip_level: 0,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .image_extent(vk::Extent3D {
+                    width: self.width,
+                    height: self.height,
+                    depth: 1,
+                });
+
+            // Copy UV plane
+            let uv_region = vk::BufferImageCopy::default()
+                .buffer_offset(y_size as u64)
+                .image_subresource(vk::ImageSubresourceLayers {
+                    aspect_mask: vk::ImageAspectFlags::PLANE_1,
+                    mip_level: 0,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .image_extent(vk::Extent3D {
+                    width: self.width / 2,
+                    height: self.height / 2,
+                    depth: 1,
+                });
+
+            self.device.cmd_copy_image_to_buffer(
+                cmd,
+                self.dpb_images[dpb_slot],
+                vk::ImageLayout::VIDEO_DECODE_DPB_KHR,
+                staging_buf,
+                &[y_region, uv_region],
+            );
+
+            self.device.end_command_buffer(cmd)?;
+
+            let cmd_bufs_submit = [cmd];
+            let submit = vk::SubmitInfo::default().command_buffers(&cmd_bufs_submit);
+            self.device
+                .queue_submit(self.transfer_queue, &[submit], vk::Fence::null())?;
+            self.device.queue_wait_idle(self.transfer_queue)?;
+        }
+
+        // Read back
+        let mut y_data = vec![0u8; y_size];
+        let mut uv_data = vec![0u8; uv_size];
+        unsafe {
+            let ptr = self.device.map_memory(
+                staging_mem,
+                0,
+                total_size as u64,
+                vk::MemoryMapFlags::empty(),
+            )? as *const u8;
+            std::ptr::copy_nonoverlapping(ptr, y_data.as_mut_ptr(), y_size);
+            std::ptr::copy_nonoverlapping(ptr.add(y_size), uv_data.as_mut_ptr(), uv_size);
+            self.device.unmap_memory(staging_mem);
+        }
+
+        // Cleanup
+        unsafe {
+            self.device.destroy_buffer(staging_buf, None);
+            self.device.free_memory(staging_mem, None);
+            self.device.destroy_command_pool(xfer_pool, None);
+        }
+
+        Ok((y_data, uv_data))
+    }
+
+    /// Convert NV12 to RGBA for display.
+    pub fn nv12_to_rgba(
+        y_data: &[u8],
+        uv_data: &[u8],
+        width: u32,
+        height: u32,
+    ) -> Vec<u8> {
+        let w = width as usize;
+        let h = height as usize;
+        let mut rgba = vec![0u8; w * h * 4];
+
+        for row in 0..h {
+            for col in 0..w {
+                let y = y_data[row * w + col] as f32;
+                let uv_row = row / 2;
+                let uv_col = (col / 2) * 2;
+                let u = uv_data[uv_row * w + uv_col] as f32 - 128.0;
+                let v = uv_data[uv_row * w + uv_col + 1] as f32 - 128.0;
+
+                let r = (y + 1.402 * v).clamp(0.0, 255.0) as u8;
+                let g = (y - 0.344 * u - 0.714 * v).clamp(0.0, 255.0) as u8;
+                let b = (y + 1.772 * u).clamp(0.0, 255.0) as u8;
+
+                let idx = (row * w + col) * 4;
+                rgba[idx] = r;
+                rgba[idx + 1] = g;
+                rgba[idx + 2] = b;
+                rgba[idx + 3] = 255;
+            }
+        }
+
+        rgba
+    }
+}
+
+/// Result of decoding one frame.
+pub struct DecodeOutput {
+    pub frame_index: u64,
+    pub show_frame: bool,
+    pub frame_type: av1_obu::FrameType,
+    pub dpb_slot: usize,
 }
 
 impl Drop for AV1Decoder {
