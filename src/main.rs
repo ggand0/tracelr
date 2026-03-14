@@ -6,6 +6,7 @@ use eframe::egui;
 mod annotation;
 mod app;
 mod build_info;
+mod cache;
 mod dataset;
 mod perf;
 mod theme;

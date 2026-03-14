@@ -3,10 +3,14 @@ use std::path::PathBuf;
 use eframe::egui;
 
 use crate::annotation::AnnotationState;
+use crate::cache::{DecodeLruCache, EpisodeCache, SliderLoader};
 use crate::dataset::{self, LeRobotDataset};
 use crate::perf::PerfTracker;
 use crate::theme::UiTheme;
 use crate::video;
+
+const CACHE_COUNT: usize = 5; // ±5 episodes = 11 total slots
+const LRU_CAPACITY: usize = 50;
 
 pub struct App {
     // Data
@@ -17,12 +21,20 @@ pub struct App {
     current_episode: usize,
     current_video_key_index: usize,
     current_texture: Option<egui::TextureHandle>,
+    video_paths: Vec<PathBuf>,
     loading_error: Option<String>,
+
+    // Cache
+    episode_cache: Option<EpisodeCache>,
+    slider_loader: SliderLoader,
+    decode_cache: DecodeLruCache,
+    slider_dragging: bool,
 
     // UI
     theme: UiTheme,
     perf: PerfTracker,
     initial_size_set: bool,
+    show_cache_overlay: bool,
 }
 
 impl App {
@@ -33,14 +45,23 @@ impl App {
             current_episode: 0,
             current_video_key_index: 0,
             current_texture: None,
+            video_paths: Vec::new(),
             loading_error: None,
+            episode_cache: None,
+            slider_loader: SliderLoader::new(),
+            decode_cache: DecodeLruCache::new(LRU_CAPACITY),
+            slider_dragging: false,
             theme: UiTheme::teal_dark(),
             perf: PerfTracker::new(),
             initial_size_set: false,
+            show_cache_overlay: false,
         };
 
         if let Some(path) = initial_path {
             app.load_dataset(&path);
+            if app.dataset.is_some() {
+                app.init_cache(&_cc.egui_ctx);
+            }
         }
 
         app
@@ -50,7 +71,6 @@ impl App {
         match LeRobotDataset::load(path) {
             Ok(ds) => {
                 log::info!("Dataset loaded: {} episodes", ds.episodes.len());
-                // Default to wrist camera if available, otherwise first
                 let wrist_idx = ds
                     .info
                     .video_keys
@@ -58,6 +78,15 @@ impl App {
                     .position(|k| k.contains("wrist"))
                     .unwrap_or(0);
                 self.current_video_key_index = wrist_idx;
+
+                // Build video paths for all episodes
+                let video_key = ds.info.video_keys.get(wrist_idx).cloned().unwrap_or_default();
+                self.video_paths = ds
+                    .episodes
+                    .iter()
+                    .map(|ep| ds.video_path(ep.episode_index, &video_key))
+                    .collect();
+
                 self.dataset = Some(ds);
                 self.current_episode = 0;
                 self.current_texture = None;
@@ -78,61 +107,173 @@ impl App {
         }
     }
 
-    fn load_current_frame(&mut self, ctx: &egui::Context) {
-        let ds = match &self.dataset {
-            Some(ds) => ds,
-            None => return,
-        };
+    /// Initialize the episode cache centered on current_episode.
+    fn init_cache(&mut self, ctx: &egui::Context) {
+        if self.video_paths.is_empty() {
+            return;
+        }
+        let mut cache = EpisodeCache::new(ctx, CACHE_COUNT);
+        cache.initialize(self.current_episode, &self.video_paths);
+        // Set the current texture from the cache (center was decoded synchronously)
+        self.current_texture = cache.current_texture_for(self.current_episode);
+        if self.current_texture.is_some() {
+            self.perf.record_display();
+        }
+        self.episode_cache = Some(cache);
+    }
 
-        let video_key = match ds.info.video_keys.get(self.current_video_key_index) {
-            Some(k) => k.clone(),
-            None => return,
-        };
-
-        let video_path = ds.video_path(self.current_episode, &video_key);
-        log::debug!("Loading frame from: {}", video_path.display());
-
-        let start = std::time::Instant::now();
-        match video::decode_middle_frame(&video_path) {
-            Ok(image) => {
-                let decode_ms = start.elapsed().as_secs_f64() * 1000.0;
-                log::debug!(
-                    "Decoded ep {} in {:.1}ms ({}x{})",
-                    self.current_episode,
-                    decode_ms,
-                    image.size[0],
-                    image.size[1],
-                );
-                let name = format!("ep{}_{}", self.current_episode, video_key);
-                self.current_texture = Some(ctx.load_texture(
-                    name,
-                    image,
-                    egui::TextureOptions::LINEAR,
-                ));
-                self.perf.record_display();
-            }
-            Err(e) => {
-                log::error!("Failed to decode video: {}", e);
-                self.loading_error = Some(format!("Decode error: {}", e));
-                self.current_texture = None;
+    /// Synchronous fallback: decode and set texture directly.
+    fn load_current_frame_sync(&mut self, ctx: &egui::Context) {
+        if let Some(path) = self.video_paths.get(self.current_episode) {
+            let start = std::time::Instant::now();
+            match video::decode_middle_frame(path) {
+                Ok(image) => {
+                    let decode_ms = start.elapsed().as_secs_f64() * 1000.0;
+                    log::debug!(
+                        "Sync decoded ep {} in {:.1}ms ({}x{})",
+                        self.current_episode,
+                        decode_ms,
+                        image.size[0],
+                        image.size[1],
+                    );
+                    let name = format!("ep_{:03}_sync", self.current_episode);
+                    self.current_texture = Some(ctx.load_texture(
+                        name,
+                        image,
+                        egui::TextureOptions::LINEAR,
+                    ));
+                    self.perf.record_display();
+                }
+                Err(e) => {
+                    log::error!("Failed to decode video: {}", e);
+                    self.loading_error = Some(format!("Decode error: {}", e));
+                    self.current_texture = None;
+                }
             }
         }
     }
 
-    fn navigate_to_episode(&mut self, episode: usize, ctx: &egui::Context) {
-        let total = self
-            .dataset
-            .as_ref()
-            .map(|ds| ds.episodes.len())
-            .unwrap_or(0);
+    /// Navigate by ±1 using the sliding window cache.
+    fn navigate_step(&mut self, delta: isize, ctx: &egui::Context) {
+        let total = self.video_paths.len();
+        if total == 0 {
+            return;
+        }
+        let new_ep = if delta > 0 {
+            (self.current_episode + delta as usize).min(total - 1)
+        } else {
+            self.current_episode
+                .checked_sub((-delta) as usize)
+                .unwrap_or(0)
+        };
+        if new_ep == self.current_episode {
+            return;
+        }
+
+        self.current_episode = new_ep;
+
+        // Try cache first
+        if let Some(cache) = &mut self.episode_cache {
+            let tex = if delta > 0 {
+                cache.navigate_forward(new_ep, &self.video_paths)
+            } else {
+                cache.navigate_backward(new_ep, &self.video_paths)
+            };
+            if let Some(tex) = tex {
+                self.current_texture = Some(tex);
+                self.perf.record_display();
+                return;
+            }
+        }
+
+        // Cache miss — sync fallback
+        log::debug!("Cache miss for ep {}, sync decode", new_ep);
+        self.load_current_frame_sync(ctx);
+    }
+
+    /// Jump to an arbitrary episode (click, Home/End, slider release).
+    /// Reinitializes the cache window around the new position.
+    fn navigate_jump(&mut self, episode: usize, ctx: &egui::Context) {
+        let total = self.video_paths.len();
         if total == 0 {
             return;
         }
         let episode = episode.min(total - 1);
-        if episode != self.current_episode || self.current_texture.is_none() {
-            self.current_episode = episode;
-            self.current_texture = None;
-            self.load_current_frame(ctx);
+        if episode == self.current_episode && self.current_texture.is_some() {
+            return;
+        }
+
+        self.current_episode = episode;
+
+        if let Some(cache) = &mut self.episode_cache {
+            cache.jump_to(episode, &self.video_paths);
+            if let Some(tex) = cache.current_texture_for(episode) {
+                self.current_texture = Some(tex);
+                self.perf.record_display();
+                return;
+            }
+        }
+
+        // Fallback
+        self.load_current_frame_sync(ctx);
+    }
+
+    /// Navigate during slider drag — throttled sync decode with LRU cache.
+    fn navigate_slider_drag(&mut self, episode: usize, ctx: &egui::Context) {
+        let total = self.video_paths.len();
+        if total == 0 {
+            return;
+        }
+        let episode = episode.min(total - 1);
+        if episode == self.current_episode && self.current_texture.is_some() {
+            return;
+        }
+
+        self.current_episode = episode;
+
+        // Check episode cache first
+        if let Some(cache) = &self.episode_cache {
+            if let Some(tex) = cache.current_texture_for(episode) {
+                self.current_texture = Some(tex);
+                self.perf.record_display();
+                return;
+            }
+        }
+
+        // Throttled sync decode
+        if !self.slider_loader.should_load() {
+            return;
+        }
+
+        // Check LRU cache
+        if let Some(image) = self.decode_cache.get(episode) {
+            let name = format!("ep_{:03}_lru", episode);
+            self.current_texture = Some(ctx.load_texture(
+                name,
+                image.clone(),
+                egui::TextureOptions::LINEAR,
+            ));
+            self.perf.record_display();
+            return;
+        }
+
+        // Sync decode and insert into LRU
+        if let Some(path) = self.video_paths.get(episode) {
+            match video::decode_middle_frame(path) {
+                Ok(image) => {
+                    let name = format!("ep_{:03}_slider", episode);
+                    self.current_texture = Some(ctx.load_texture(
+                        name,
+                        image.clone(),
+                        egui::TextureOptions::LINEAR,
+                    ));
+                    self.decode_cache.insert(episode, image);
+                    self.perf.record_display();
+                }
+                Err(e) => {
+                    log::warn!("Slider decode failed for ep {}: {}", episode, e);
+                }
+            }
         }
     }
 
@@ -140,30 +281,23 @@ impl App {
         if self.dataset.is_none() {
             return;
         }
-        let total = self
-            .dataset
-            .as_ref()
-            .map(|ds| ds.episodes.len())
-            .unwrap_or(0);
+        let total = self.video_paths.len();
+
+        let mut step: Option<isize> = None;
+        let mut jump: Option<usize> = None;
 
         ctx.input(|i| {
-            // Episode navigation
             if i.key_pressed(egui::Key::ArrowRight) || i.key_pressed(egui::Key::D) {
-                let next = (self.current_episode + 1).min(total.saturating_sub(1));
-                self.current_episode = next;
-                self.current_texture = None;
+                step = Some(1);
             }
             if i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::A) {
-                self.current_episode = self.current_episode.saturating_sub(1);
-                self.current_texture = None;
+                step = Some(-1);
             }
             if i.key_pressed(egui::Key::Home) {
-                self.current_episode = 0;
-                self.current_texture = None;
+                jump = Some(0);
             }
             if i.key_pressed(egui::Key::End) {
-                self.current_episode = total.saturating_sub(1);
-                self.current_texture = None;
+                jump = Some(total.saturating_sub(1));
             }
 
             // Annotation shortcuts (1-4)
@@ -184,9 +318,10 @@ impl App {
             }
         });
 
-        // Load frame if texture was cleared by navigation
-        if self.current_texture.is_none() && self.dataset.is_some() {
-            self.load_current_frame(ctx);
+        if let Some(delta) = step {
+            self.navigate_step(delta, ctx);
+        } else if let Some(ep) = jump {
+            self.navigate_jump(ep, ctx);
         }
     }
 
@@ -203,7 +338,7 @@ impl App {
             if dataset::is_lerobot_dataset(path) {
                 self.load_dataset(path);
                 if self.dataset.is_some() {
-                    self.load_current_frame(ctx);
+                    self.init_cache(ctx);
                 }
             } else {
                 self.loading_error = Some(format!(
@@ -264,7 +399,7 @@ impl App {
                         if let Some(path) = rfd::FileDialog::new().pick_folder() {
                             self.load_dataset(&path);
                             if self.dataset.is_some() {
-                                self.load_current_frame(ctx);
+                                self.init_cache(ctx);
                             }
                         }
                     }
@@ -273,7 +408,10 @@ impl App {
                         self.save_annotations();
                     }
                     if ui
-                        .add_enabled(self.dataset.is_some(), egui::Button::new("Export to LeRobot..."))
+                        .add_enabled(
+                            self.dataset.is_some(),
+                            egui::Button::new("Export to LeRobot..."),
+                        )
                         .clicked()
                     {
                         ui.close_menu();
@@ -287,6 +425,15 @@ impl App {
                     ui.separator();
                     if ui.button("Quit").clicked() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                });
+
+                ui.menu_button("View", |ui| {
+                    if ui
+                        .checkbox(&mut self.show_cache_overlay, "Cache Overlay")
+                        .changed()
+                    {
+                        ui.close_menu();
                     }
                 });
 
@@ -322,7 +469,6 @@ impl App {
 
         let mut navigate_to = None;
 
-        // Collect annotation data upfront to avoid borrow issues
         let episode_annotations: Vec<(usize, Option<(String, egui::Color32)>)> = ds
             .episodes
             .iter()
@@ -342,13 +488,11 @@ impl App {
                 let is_selected = *episode_index == self.current_episode;
 
                 let response = ui.horizontal(|ui| {
-                    // Colored dot (left side, before text)
                     if let Some((_, color)) = annot_info {
                         let (rect, _) =
                             ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
                         ui.painter().circle_filled(rect.center(), 4.0, *color);
                     } else {
-                        // Reserve space for alignment
                         ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
                     }
 
@@ -367,7 +511,7 @@ impl App {
         });
 
         if let Some(ep) = navigate_to {
-            self.navigate_to_episode(ep, ctx);
+            self.navigate_jump(ep, ctx);
         }
     }
 
@@ -377,7 +521,6 @@ impl App {
             None => return,
         };
 
-        // Episode info
         ui.label(
             egui::RichText::new("Episode Info")
                 .strong()
@@ -387,9 +530,15 @@ impl App {
 
         if let Some(ep) = ds.episodes.get(self.current_episode) {
             let info_rows: Vec<(&str, String)> = vec![
-                ("Episode:", format!("{} / {}", ep.episode_index, ds.episodes.len())),
+                (
+                    "Episode:",
+                    format!("{} / {}", ep.episode_index, ds.episodes.len()),
+                ),
                 ("Frames:", format!("{}", ep.length)),
-                ("Duration:", format!("{:.1}s", ep.length as f64 / ds.info.fps as f64)),
+                (
+                    "Duration:",
+                    format!("{:.1}s", ep.length as f64 / ds.info.fps as f64),
+                ),
                 ("FPS:", format!("{}", ds.info.fps)),
             ];
 
@@ -400,7 +549,6 @@ impl App {
                 });
             }
 
-            // Camera selector
             if ds.info.video_keys.len() > 1 {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("Camera:").color(self.theme.muted));
@@ -427,7 +575,6 @@ impl App {
 
         ui.add_space(16.0);
 
-        // Annotation prompt cards
         ui.label(
             egui::RichText::new("Annotation")
                 .strong()
@@ -437,7 +584,6 @@ impl App {
 
         let current_annotation = self.annotations.get(self.current_episode);
 
-        // Collect prompt display data to avoid borrowing self.annotations during mutation
         let prompt_data: Vec<(usize, String, egui::Color32)> = self
             .annotations
             .prompts
@@ -473,7 +619,6 @@ impl App {
             }
         }
 
-        // Save button (always visible)
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             if ui.button("Save (Ctrl+S)").clicked() {
@@ -488,14 +633,9 @@ impl App {
             }
         });
 
-        // Annotation file path
         if let Some(path) = self.annotation_json_path() {
             ui.add_space(4.0);
-            ui.label(
-                egui::RichText::new(path)
-                    .color(self.theme.muted)
-                    .small(),
-            );
+            ui.label(egui::RichText::new(path).color(self.theme.muted).small());
         }
     }
 
@@ -503,7 +643,9 @@ impl App {
         if let Some(tex) = &self.current_texture {
             let available = ui.available_size();
             let tex_size = tex.size_vec2();
-            let scale = (available.x / tex_size.x).min(available.y / tex_size.y).min(1.0);
+            let scale = (available.x / tex_size.x)
+                .min(available.y / tex_size.y)
+                .min(1.0);
             let display_size = tex_size * scale;
             ui.centered_and_justified(|ui| {
                 ui.image(egui::load::SizedTexture::new(tex.id(), display_size));
@@ -527,15 +669,9 @@ impl App {
         }
     }
 
-    /// Custom painted navigation slider matching viewskater-egui's accent style.
-    /// Draws a two-tone rail (accent fill up to handle, gray for the rest)
-    /// with a round accent handle.
+    /// Custom painted navigation slider with drag/release tracking.
     fn show_nav_slider(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
-        let total = self
-            .dataset
-            .as_ref()
-            .map(|ds| ds.episodes.len())
-            .unwrap_or(0);
+        let total = self.video_paths.len();
         if total <= 1 {
             return;
         }
@@ -556,16 +692,29 @@ impl App {
         let handle_range = (rect.left() + handle_radius)..=(rect.right() - handle_radius);
 
         let mut idx = self.current_episode;
+
         if let Some(pos) = response.interact_pointer_pos() {
             let usable = rect.x_range().shrink(handle_radius);
             let drag_t = ((pos.x - usable.min) / (usable.max - usable.min)).clamp(0.0, 1.0);
-            idx = (max as f32 * drag_t).round() as usize;
-            if idx != self.current_episode {
-                self.navigate_to_episode(idx, ctx);
+            let new_idx = (max as f32 * drag_t).round() as usize;
+
+            if !self.slider_dragging {
+                self.slider_dragging = true;
             }
+
+            if new_idx != self.current_episode {
+                self.navigate_slider_drag(new_idx, ctx);
+            }
+            idx = self.current_episode;
         }
 
-        // Draw rail background
+        if response.drag_stopped() && self.slider_dragging {
+            self.slider_dragging = false;
+            // Recenter cache around final position
+            self.navigate_jump(self.current_episode, ctx);
+        }
+
+        // Draw rail
         let rail = egui::Rect::from_min_max(
             egui::pos2(rect.left(), cy - rail_radius),
             egui::pos2(rect.right(), cy + rail_radius),
@@ -575,10 +724,8 @@ impl App {
 
         ui.painter()
             .rect_filled(rail, rail_radius, egui::Color32::from_gray(60));
-        // Filled portion up to handle
         let filled = egui::Rect::from_min_max(rail.min, egui::pos2(handle_x, rail.max.y));
         ui.painter().rect_filled(filled, rail_radius, accent);
-        // Handle
         ui.painter().circle(
             egui::pos2(handle_x, cy),
             handle_radius,
@@ -600,14 +747,12 @@ impl App {
         let dim = egui::Color32::from_gray(160);
 
         ui.horizontal(|ui| {
-            // Episode index
             ui.label(
                 egui::RichText::new(format!("ep {:03}", self.current_episode))
                     .font(font.clone())
                     .color(bright),
             );
 
-            // Resolution
             if let Some(tex) = &self.current_texture {
                 ui.separator();
                 ui.label(
@@ -617,7 +762,6 @@ impl App {
                 );
             }
 
-            // Frame count
             if let Some(ep) = ep {
                 ui.separator();
                 ui.label(
@@ -627,7 +771,6 @@ impl App {
                 );
             }
 
-            // Right-aligned: index / total
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(
                     egui::RichText::new(format!("{} / {}", self.current_episode + 1, total))
@@ -654,6 +797,11 @@ impl eframe::App for App {
                     target_w, target_h,
                 )));
             }
+        }
+
+        // Poll cache for completed background decodes
+        if let Some(cache) = &mut self.episode_cache {
+            cache.poll();
         }
 
         self.handle_dropped_files(ctx);
@@ -700,5 +848,12 @@ impl eframe::App for App {
             }
             self.show_frame_display(ui);
         });
+
+        // Cache debug overlay
+        if self.show_cache_overlay {
+            if let Some(cache) = &self.episode_cache {
+                cache.show_debug_overlay(ctx, self.current_episode, self.video_paths.len());
+            }
+        }
     }
 }
