@@ -8,5 +8,6 @@
 //! - Decoded frames are wgpu::Texture (zero-copy, never leave GPU memory).
 
 pub mod av1_obu;
+pub mod vulkan_decoder;
 #[cfg(test)]
 mod test_av1;

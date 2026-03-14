@@ -1,8 +1,9 @@
-/// Integration test: extract AV1 OBUs from a real video file using ffmpeg,
-/// then parse the sequence header and frame headers with our parser.
+/// Integration tests for AV1 OBU parsing and Vulkan Video capabilities.
 #[cfg(test)]
 mod tests {
     use crate::gpu_decode::av1_obu;
+    use crate::gpu_decode::vulkan_decoder;
+    use std::ffi::CStr;
     use std::path::Path;
 
     fn get_test_video() -> Option<std::path::PathBuf> {
@@ -112,5 +113,50 @@ mod tests {
             }
             break; // Only first packet
         }
+    }
+
+    #[test]
+    fn test_vulkan_av1_decode_caps() {
+        use ash::vk;
+
+        // Create Vulkan instance with video extensions
+        let entry = unsafe { ash::Entry::load().unwrap() };
+        let app_info = vk::ApplicationInfo::default()
+            .api_version(vk::make_api_version(0, 1, 3, 0));
+        let create_info = vk::InstanceCreateInfo::default()
+            .application_info(&app_info);
+        let instance = unsafe { entry.create_instance(&create_info, None).unwrap() };
+
+        // Find a physical device with video decode
+        let physical_devices = unsafe { instance.enumerate_physical_devices().unwrap() };
+        eprintln!("Found {} physical devices", physical_devices.len());
+
+        for pdev in &physical_devices {
+            let props = unsafe { instance.get_physical_device_properties(*pdev) };
+            let name = unsafe { CStr::from_ptr(props.device_name.as_ptr()) };
+            eprintln!("Device: {:?}", name);
+
+            match vulkan_decoder::check_av1_decode_support(&instance, *pdev) {
+                Ok((queue_family, _)) => {
+                    eprintln!("  Video decode queue family: {}", queue_family);
+
+                    match vulkan_decoder::query_av1_decode_caps(&entry, &instance, *pdev) {
+                        Ok(caps) => {
+                            eprintln!("  AV1 decode caps:");
+                            eprintln!("    max_coded_extent: {}x{}",
+                                caps.max_coded_extent.width, caps.max_coded_extent.height);
+                            eprintln!("    max_dpb_slots: {}", caps.max_dpb_slots);
+                            eprintln!("    max_active_refs: {}", caps.max_active_reference_pictures);
+                            assert!(caps.max_coded_extent.width >= 640);
+                            assert!(caps.max_coded_extent.height >= 480);
+                        }
+                        Err(e) => eprintln!("  AV1 not supported: {}", e),
+                    }
+                }
+                Err(e) => eprintln!("  No video decode: {}", e),
+            }
+        }
+
+        unsafe { instance.destroy_instance(None) };
     }
 }

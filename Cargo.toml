@@ -16,6 +16,9 @@ clap = { version = "4", features = ["derive"] }
 log = "0.4"
 env_logger = "0.11"
 rfd = "0.15"
+ash = "0.38"
+ash-window = "0.13"
+gpu-allocator = { version = "0.27", features = ["vulkan"] }
 
 [build-dependencies]
 chrono = "0.4"
