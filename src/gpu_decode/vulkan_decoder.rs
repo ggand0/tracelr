@@ -1101,13 +1101,13 @@ impl AV1Decoder {
             reserved2: [0; 3],
             OrderHints: self.vbi_order_hint,
             expectedFrameId: [0; 8],
-            pTileInfo: std::ptr::null(),
-            pQuantization: std::ptr::null(),
-            pSegmentation: std::ptr::null(),
-            pLoopFilter: std::ptr::null(),
-            pCDEF: std::ptr::null(),
-            pLoopRestoration: std::ptr::null(),
-            pGlobalMotion: std::ptr::null(),
+            pTileInfo: &tile_info,
+            pQuantization: &quantization,
+            pSegmentation: &segmentation,
+            pLoopFilter: &loop_filter,
+            pCDEF: &cdef,
+            pLoopRestoration: &loop_restoration,
+            pGlobalMotion: &global_motion,
             pFilmGrain: std::ptr::null(),
         };
 
@@ -1123,10 +1123,27 @@ impl AV1Decoder {
         let tile_offsets = [0u32]; // relative to the OBU data start
         let tile_sizes = [data_size as u32]; // entire packet is the tile
 
+        // Provide tile offsets and sizes.
+        // NVIDIA crashes if tile_sizes is wrong (e.g., using full packet size).
+        // Use the Frame OBU data size (after header) for the single tile.
+        let frame_obu = obus.iter().find(|o| {
+            o.obu_type == av1_obu::ObuType::Frame || o.obu_type == av1_obu::ObuType::TileGroup
+        });
+        let tile_data_size = frame_obu.map(|o| o.data_size).unwrap_or(data_size);
+        let tile_offsets = [frame_obu.map(|o| o.data_offset as u32).unwrap_or(0)];
+        let tile_sizes = [tile_data_size as u32];
+
+        // NVIDIA driver bug: crashes on inter frames when p_tile_sizes is non-null.
+        // Provide tile_sizes only for key frames (needed for pixel output).
+        // Inter frames inherit tile layout from their reference frames.
         let mut av1_pic_info = vk::VideoDecodeAV1PictureInfoKHR::default()
             .std_picture_info(&std_pic_info)
             .reference_name_slot_indices(ref_slot_indices)
-            .frame_header_offset(frame_header_offset_in_obu as u32);
+            .frame_header_offset(frame_header_offset_in_obu as u32)
+            .tile_offsets(&tile_offsets);
+        if fh.is_intra_frame {
+            av1_pic_info = av1_pic_info.tile_sizes(&tile_sizes);
+        }
 
         // 6. Destination picture resource
         let dst_pic_resource = vk::VideoPictureResourceInfoKHR::default()
