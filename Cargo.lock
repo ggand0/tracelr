@@ -1139,6 +1139,7 @@ dependencies = [
  "objc2-foundation 0.2.2",
  "parking_lot",
  "percent-encoding",
+ "pollster",
  "profiling",
  "raw-window-handle",
  "static_assertions",
@@ -1146,6 +1147,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "web-time",
+ "wgpu",
  "winapi",
  "windows-sys 0.59.0",
  "winit",
@@ -2138,6 +2140,7 @@ dependencies = [
  "dirs",
  "eframe",
  "egui",
+ "egui-wgpu",
  "env_logger",
  "ffmpeg-next",
  "gpu-allocator",
@@ -2146,6 +2149,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "wgpu",
 ]
 
 [[package]]
@@ -3063,6 +3067,12 @@ checksum = "76afc826de14238e6e8c374ddcc1fa19e374fd8dd986b0d2af0d02377261d83c"
 dependencies = [
  "getrandom 0.3.4",
 ]
+
+[[package]]
+name = "range-alloc"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3d6831663a5098ea164f89cff59c6284e95f4e3c76ce9848d4529f5ccca9bde"
 
 [[package]]
 name = "raw-window-handle"
@@ -4169,6 +4179,7 @@ dependencies = [
  "document-features",
  "js-sys",
  "log",
+ "naga",
  "parking_lot",
  "profiling",
  "raw-window-handle",
@@ -4216,13 +4227,16 @@ dependencies = [
  "android_system_properties",
  "arrayvec",
  "ash",
+ "bit-set",
  "bitflags 2.11.0",
+ "block",
  "bytemuck",
  "cfg_aliases",
  "core-graphics-types",
  "glow",
  "glutin_wgl_sys",
  "gpu-alloc",
+ "gpu-allocator",
  "gpu-descriptor",
  "js-sys",
  "khronos-egl",
@@ -4237,6 +4251,7 @@ dependencies = [
  "ordered-float",
  "parking_lot",
  "profiling",
+ "range-alloc",
  "raw-window-handle",
  "renderdoc-sys",
  "rustc-hash 1.1.0",
@@ -4246,6 +4261,7 @@ dependencies = [
  "web-sys",
  "wgpu-types",
  "windows",
+ "windows-core 0.58.0",
 ]
 
 [[package]]

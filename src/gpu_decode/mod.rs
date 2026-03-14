@@ -9,5 +9,6 @@
 
 pub mod av1_obu;
 pub mod vulkan_decoder;
+pub mod wgpu_device;
 #[cfg(test)]
 mod test_av1;
