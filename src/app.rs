@@ -4,7 +4,7 @@ use std::time::Instant;
 use eframe::egui;
 
 use crate::annotation::AnnotationState;
-use crate::cache::{DecodeLruCache, EpisodeCache, FrameCache, SliderLoader};
+use crate::cache::{DecodeLruCache, EpisodeCache, SliderLoader, VideoPlayer};
 use crate::dataset::{self, LeRobotDataset};
 use crate::perf::PerfTracker;
 use crate::theme::UiTheme;
@@ -33,7 +33,7 @@ pub struct App {
 
     // Video playback
     viewing_video: bool,
-    frame_cache: Option<FrameCache>,
+    player: Option<VideoPlayer>,
     current_frame: usize,
     playing: bool,
     last_frame_time: Option<Instant>,
@@ -61,7 +61,7 @@ impl App {
             decode_cache: DecodeLruCache::new(LRU_CAPACITY),
             slider_dragging: false,
             viewing_video: false,
-            frame_cache: None,
+            player: None,
             current_frame: 0,
             playing: false,
             last_frame_time: None,
@@ -76,6 +76,7 @@ impl App {
             app.load_dataset(&path);
             if app.dataset.is_some() {
                 app.init_cache(&_cc.egui_ctx);
+                app.enter_video_mode(&_cc.egui_ctx);
             }
         }
 
@@ -138,6 +139,7 @@ impl App {
     }
 
     /// Synchronous fallback: decode and set texture directly.
+    #[allow(dead_code)]
     fn load_current_frame_sync(&mut self, ctx: &egui::Context) {
         if let Some(path) = self.video_paths.get(self.current_episode) {
             let start = std::time::Instant::now();
@@ -187,7 +189,7 @@ impl App {
 
         self.current_episode = new_ep;
 
-        // Try cache first
+        // Show episode thumbnail immediately from cache (while video loads)
         if let Some(cache) = &mut self.episode_cache {
             let tex = if delta > 0 {
                 cache.navigate_forward(new_ep, &self.video_paths)
@@ -197,13 +199,11 @@ impl App {
             if let Some(tex) = tex {
                 self.current_texture = Some(tex);
                 self.perf.record_display();
-                return;
             }
         }
 
-        // Cache miss — sync fallback
-        log::debug!("Cache miss for ep {}, sync decode", new_ep);
-        self.load_current_frame_sync(ctx);
+        // Start video playback for the new episode
+        self.enter_video_mode(ctx);
     }
 
     /// Jump to an arbitrary episode (click, Home/End, slider release).
@@ -220,17 +220,16 @@ impl App {
 
         self.current_episode = episode;
 
+        // Show episode thumbnail from cache while video loads
         if let Some(cache) = &mut self.episode_cache {
             cache.jump_to(episode, &self.video_paths);
             if let Some(tex) = cache.current_texture_for(episode) {
                 self.current_texture = Some(tex);
-                self.perf.record_display();
-                return;
             }
         }
 
-        // Fallback
-        self.load_current_frame_sync(ctx);
+        // Start video playback
+        self.enter_video_mode(ctx);
     }
 
     /// Navigate during slider drag — throttled sync decode with LRU cache.
@@ -295,9 +294,6 @@ impl App {
     // -- Video playback --
 
     fn enter_video_mode(&mut self, ctx: &egui::Context) {
-        if self.viewing_video {
-            return;
-        }
         let ds = match &self.dataset {
             Some(ds) => ds,
             None => return,
@@ -313,7 +309,6 @@ impl App {
 
         let total_frames = ep.length;
         let fps = ds.info.fps;
-        let center = total_frames / 2; // Start at middle (same frame as thumbnail)
 
         log::info!(
             "Entering video mode: ep {}, {} frames, {}fps",
@@ -322,11 +317,11 @@ impl App {
             fps
         );
 
-        let cache = FrameCache::new(ctx, &video_path, total_frames, fps, center);
-        self.frame_cache = Some(cache);
-        self.current_frame = center;
+        let player = VideoPlayer::new(ctx, &video_path, total_frames, fps, 0);
+        self.player = Some(player);
+        self.current_frame = 0;
         self.viewing_video = true;
-        self.playing = false;
+        self.playing = true;
         self.last_frame_time = None;
     }
 
@@ -336,7 +331,7 @@ impl App {
         }
         self.viewing_video = false;
         self.playing = false;
-        self.frame_cache = None;
+        self.player = None;
         self.last_frame_time = None;
         // Restore episode thumbnail
         if let Some(cache) = &self.episode_cache {
@@ -350,11 +345,7 @@ impl App {
         if !self.playing || !self.viewing_video {
             return;
         }
-        let fps = self
-            .frame_cache
-            .as_ref()
-            .map(|c| c.fps)
-            .unwrap_or(30);
+        let fps = self.player.as_ref().map(|p| p.fps).unwrap_or(30);
         let frame_duration = std::time::Duration::from_secs_f64(1.0 / fps as f64);
 
         let now = Instant::now();
@@ -367,41 +358,27 @@ impl App {
         };
 
         if !should_advance {
-            ctx.request_repaint(); // Keep ticking
+            ctx.request_repaint();
             return;
         }
 
-        let total = self
-            .frame_cache
-            .as_ref()
-            .map(|c| c.total_frames)
-            .unwrap_or(0);
-        let next = self.current_frame + 1;
-        if next >= total {
-            // Reached end — stop playback
+        let total = self.player.as_ref().map(|p| p.total_frames).unwrap_or(0);
+        if self.current_frame + 1 >= total {
             self.playing = false;
             return;
         }
 
-        // Gate on cache: only advance if next frame is ready
-        let cached = self
-            .frame_cache
-            .as_ref()
-            .map(|c| c.is_cached(next))
-            .unwrap_or(false);
-
-        if cached {
-            self.current_frame = next;
-            if let Some(cache) = &mut self.frame_cache {
-                if let Some(tex) = cache.navigate_forward(next) {
-                    self.current_texture = Some(tex);
-                    self.perf.record_display();
-                }
+        // Pull next decoded frame from the player channel
+        if let Some(player) = &mut self.player {
+            if let Some(tex) = player.poll_next_frame() {
+                self.current_frame = player.current_frame;
+                self.current_texture = Some(tex);
+                self.perf.record_display();
+                self.last_frame_time = Some(now);
             }
-            self.last_frame_time = Some(now);
         }
 
-        ctx.request_repaint(); // Keep ticking
+        ctx.request_repaint();
     }
 
     fn handle_keyboard(&mut self, ctx: &egui::Context) {
@@ -436,17 +413,14 @@ impl App {
             }
         });
 
-        // Toggle video mode
-        if enter_pressed {
-            if self.viewing_video {
-                self.exit_video_mode();
-            } else {
-                self.enter_video_mode(ctx);
-            }
-            return;
-        }
+        // Escape: pause and exit to thumbnail view
         if escape_pressed && self.viewing_video {
             self.exit_video_mode();
+            return;
+        }
+        // Enter: re-enter video mode if exited
+        if enter_pressed && !self.viewing_video {
+            self.enter_video_mode(ctx);
             return;
         }
 
@@ -467,27 +441,9 @@ impl App {
             }
         }
 
-        let total_frames = self
-            .frame_cache
-            .as_ref()
-            .map(|c| c.total_frames)
-            .unwrap_or(0);
-
+        let total_frames = self.player.as_ref().map(|p| p.total_frames).unwrap_or(0);
         let mut frame_step: Option<isize> = None;
         let mut frame_jump: Option<usize> = None;
-
-        // Check frame cache for skate gating
-        let next_cached = self
-            .frame_cache
-            .as_ref()
-            .map(|c| c.is_cached(self.current_frame + 1))
-            .unwrap_or(false);
-        let prev_cached = self.current_frame > 0
-            && self
-                .frame_cache
-                .as_ref()
-                .map(|c| c.is_cached(self.current_frame - 1))
-                .unwrap_or(false);
 
         ctx.input(|i| {
             if i.key_pressed(egui::Key::ArrowRight) || i.key_pressed(egui::Key::D) {
@@ -495,15 +451,6 @@ impl App {
             }
             if i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::A) {
                 frame_step = Some(-1);
-            }
-            // Skate mode for frames
-            if i.modifiers.shift {
-                if (i.key_down(egui::Key::ArrowRight) || i.key_down(egui::Key::D)) && next_cached {
-                    frame_step = Some(1);
-                }
-                if (i.key_down(egui::Key::ArrowLeft) || i.key_down(egui::Key::A)) && prev_cached {
-                    frame_step = Some(-1);
-                }
             }
             if i.key_pressed(egui::Key::Home) {
                 frame_jump = Some(0);
@@ -514,31 +461,29 @@ impl App {
         });
 
         if let Some(delta) = frame_step {
-            let new_frame = if delta > 0 {
-                (self.current_frame + 1).min(total_frames.saturating_sub(1))
-            } else {
-                self.current_frame.saturating_sub(1)
-            };
-            if new_frame != self.current_frame {
-                self.current_frame = new_frame;
-                if let Some(cache) = &mut self.frame_cache {
-                    let tex = if delta > 0 {
-                        cache.navigate_forward(new_frame)
-                    } else {
-                        cache.navigate_backward(new_frame)
-                    };
-                    if let Some(tex) = tex {
+            if delta > 0 {
+                // Forward: pull next frame from decoder
+                if let Some(player) = &mut self.player {
+                    if let Some(tex) = player.poll_next_frame() {
+                        self.current_frame = player.current_frame;
                         self.current_texture = Some(tex);
                         self.perf.record_display();
+                    }
+                }
+            } else {
+                // Backward: seek to previous frame
+                let new_frame = self.current_frame.saturating_sub(1);
+                if new_frame != self.current_frame {
+                    self.current_frame = new_frame;
+                    if let Some(player) = &mut self.player {
+                        player.seek(new_frame);
                     }
                 }
             }
         } else if let Some(frame) = frame_jump {
             self.current_frame = frame;
-            if let Some(cache) = &mut self.frame_cache {
-                if let Some(path) = self.video_paths.get(self.current_episode) {
-                    cache.jump_to(frame, path);
-                }
+            if let Some(player) = &mut self.player {
+                player.seek(frame);
             }
         }
     }
@@ -1052,11 +997,7 @@ impl App {
     // -- Video mode UI --
 
     fn show_frame_slider(&mut self, _ctx: &egui::Context, ui: &mut egui::Ui) {
-        let total_frames = self
-            .frame_cache
-            .as_ref()
-            .map(|c| c.total_frames)
-            .unwrap_or(0);
+        let total_frames = self.player.as_ref().map(|p| p.total_frames).unwrap_or(0);
         if total_frames <= 1 {
             return;
         }
@@ -1090,24 +1031,15 @@ impl App {
 
             if new_idx != self.current_frame {
                 self.current_frame = new_idx;
-                // Try to show cached frame
-                if let Some(cache) = &self.frame_cache {
-                    if let Some(tex) = cache.texture_for(new_idx) {
-                        self.current_texture = Some(tex);
-                        self.perf.record_display();
-                    }
-                }
             }
             idx = self.current_frame;
         }
 
         if response.drag_stopped() && self.frame_slider_dragging {
             self.frame_slider_dragging = false;
-            // Restart decoder from new position
-            if let Some(cache) = &mut self.frame_cache {
-                if let Some(path) = self.video_paths.get(self.current_episode) {
-                    cache.jump_to(self.current_frame, path);
-                }
+            // Seek decoder to new position
+            if let Some(player) = &mut self.player {
+                player.seek(self.current_frame);
             }
         }
 
@@ -1136,12 +1068,8 @@ impl App {
         let bright = egui::Color32::from_gray(200);
         let dim = egui::Color32::from_gray(160);
 
-        let total_frames = self
-            .frame_cache
-            .as_ref()
-            .map(|c| c.total_frames)
-            .unwrap_or(0);
-        let fps = self.frame_cache.as_ref().map(|c| c.fps).unwrap_or(30);
+        let total_frames = self.player.as_ref().map(|p| p.total_frames).unwrap_or(0);
+        let fps = self.player.as_ref().map(|p| p.fps).unwrap_or(30);
 
         ui.horizontal(|ui| {
             // Play state
@@ -1199,13 +1127,16 @@ impl eframe::App for App {
         if let Some(cache) = &mut self.episode_cache {
             cache.poll();
         }
-        if let Some(cache) = &mut self.frame_cache {
-            cache.poll();
-            // Update texture from cache if we don't have one yet
-            if self.viewing_video && self.current_texture.is_none() {
-                if let Some(tex) = cache.texture_for(self.current_frame) {
-                    self.current_texture = Some(tex);
-                    self.perf.record_display();
+        // In video mode, if we're waiting for the first frame after seek/init,
+        // poll one frame from the player to display.
+        if self.viewing_video && !self.playing {
+            if let Some(player) = &mut self.player {
+                if self.current_texture.is_none() {
+                    if let Some(tex) = player.poll_next_frame() {
+                        self.current_frame = player.current_frame;
+                        self.current_texture = Some(tex);
+                        self.perf.record_display();
+                    }
                 }
             }
         }

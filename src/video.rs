@@ -168,17 +168,53 @@ pub(crate) struct FrameDecodeResult {
     pub image: Option<egui::ColorImage>,
 }
 
-/// Decode all frames from a video file sequentially, sending each via channel.
-/// Starts from the beginning (or optionally seeks first). Checks `cancel` flag
-/// between frames so the thread can be stopped when the user switches episodes.
+/// Decode frames sequentially from a video file, sending via bounded channel.
+/// Uses `SyncSender` so the thread blocks when the buffer is full, naturally
+/// pacing itself to stay ~30 frames ahead of the consumer.
 ///
-/// For 480×640 AV1, sequential decode is ~2-5ms/frame. A 600-frame episode
-/// takes ~1.2-3 seconds to fully decode from the start.
+/// For 480×640 AV1, sequential decode is ~2-5ms/frame.
+pub(crate) fn decode_all_frames_sync(
+    video_path: &Path,
+    tx: mpsc::SyncSender<FrameDecodeResult>,
+    cancel: Arc<AtomicBool>,
+    ctx: egui::Context,
+    seek_to_frame: Option<usize>,
+) {
+    decode_all_frames_inner(video_path, &tx, &cancel, &ctx, seek_to_frame);
+}
+
+/// Decode frames sequentially, sending via unbounded channel.
+#[allow(dead_code)]
 pub(crate) fn decode_all_frames(
     video_path: &Path,
     tx: mpsc::Sender<FrameDecodeResult>,
     cancel: Arc<AtomicBool>,
     ctx: egui::Context,
+    seek_to_frame: Option<usize>,
+) {
+    decode_all_frames_inner(video_path, &tx, &cancel, &ctx, seek_to_frame);
+}
+
+/// Trait to abstract over Sender and SyncSender for decode_all_frames_inner.
+trait FrameSender {
+    fn send_frame(&self, result: FrameDecodeResult) -> bool;
+}
+impl FrameSender for mpsc::Sender<FrameDecodeResult> {
+    fn send_frame(&self, result: FrameDecodeResult) -> bool {
+        self.send(result).is_ok()
+    }
+}
+impl FrameSender for mpsc::SyncSender<FrameDecodeResult> {
+    fn send_frame(&self, result: FrameDecodeResult) -> bool {
+        self.send(result).is_ok()
+    }
+}
+
+fn decode_all_frames_inner(
+    video_path: &Path,
+    tx: &dyn FrameSender,
+    cancel: &AtomicBool,
+    ctx: &egui::Context,
     seek_to_frame: Option<usize>,
 ) {
     ensure_ffmpeg_init();
@@ -261,13 +297,10 @@ pub(crate) fn decode_all_frames(
             };
 
             let image = frame_to_color_image(&decoded).ok();
-            if tx
-                .send(FrameDecodeResult {
-                    frame_index: actual_frame,
-                    image,
-                })
-                .is_err()
-            {
+            if !tx.send_frame(FrameDecodeResult {
+                frame_index: actual_frame,
+                image,
+            }) {
                 return; // receiver dropped
             }
             ctx.request_repaint();
@@ -288,10 +321,12 @@ pub(crate) fn decode_all_frames(
             frame_count
         };
         let image = frame_to_color_image(&decoded).ok();
-        let _ = tx.send(FrameDecodeResult {
+        if !tx.send_frame(FrameDecodeResult {
             frame_index: actual_frame,
             image,
-        });
+        }) {
+            return;
+        }
         frame_count += 1;
     }
 }

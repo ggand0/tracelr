@@ -416,182 +416,108 @@ impl DecodeLruCache {
 }
 
 // ============================================================================
-// FrameCache: sliding window over frames within a single video episode
+// VideoPlayer: persistent decoder thread for frame-level video playback
 // ============================================================================
 
-const FRAME_CACHE_COUNT: usize = 30; // ±30 frames = 61 slots (~73MB for 480×640 RGBA)
+/// Lookahead buffer size for the bounded channel between decoder and UI.
+/// 30 frames × ~1.2MB = ~36MB. The decoder thread blocks when full,
+/// naturally pacing itself to stay ~1 second ahead of playback.
+const PLAYER_BUFFER_SIZE: usize = 30;
 
-/// Sliding window cache for video frames within a single episode.
+/// Video player backed by a background decoder thread.
 ///
-/// A background decoder thread decodes frames sequentially from the video,
-/// sending each via channel. The main thread stores a window of ±30 frames
-/// as TextureHandles. Frames outside the window are dropped.
-///
-/// For playback, the decoder stays ahead of display. For scrubbing/jumps,
+/// The decoder thread opens the video file, optionally seeks, then decodes
+/// frames sequentially — sending each via a bounded `sync_channel`. The
+/// main thread consumes one frame per 1/fps during playback. On seek,
 /// the old thread is cancelled and a new one starts from the seek position.
-pub(crate) struct FrameCache {
-    slots: VecDeque<Option<egui::TextureHandle>>,
-    first_frame: usize,
-    cache_count: usize,
-
-    result_rx: mpsc::Receiver<video::FrameDecodeResult>,
+///
+/// Memory: bounded to ~36MB (30 frames in the channel) plus 1 TextureHandle
+/// on the GPU for the currently displayed frame.
+pub(crate) struct VideoPlayer {
+    frame_rx: mpsc::Receiver<video::FrameDecodeResult>,
     cancel: Arc<AtomicBool>,
     _handle: Option<JoinHandle<()>>,
 
+    pub current_frame: usize,
     pub total_frames: usize,
     pub fps: u32,
+
+    video_path: PathBuf,
     ctx: egui::Context,
 }
 
-impl FrameCache {
-    /// Start decoding a video from `center_frame`.
-    /// Spawns a background thread that decodes all frames sequentially.
+impl VideoPlayer {
+    /// Create a player and start decoding from `start_frame`.
     pub fn new(
         ctx: &egui::Context,
         video_path: &Path,
         total_frames: usize,
         fps: u32,
-        center_frame: usize,
+        start_frame: usize,
     ) -> Self {
-        let cache_count = FRAME_CACHE_COUNT;
-        let cache_size = cache_count * 2 + 1;
-
-        let max_first = total_frames.saturating_sub(cache_size);
-        let first_frame = center_frame.saturating_sub(cache_count).min(max_first);
-
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(PLAYER_BUFFER_SIZE);
         let cancel = Arc::new(AtomicBool::new(false));
 
-        // Seek to slightly before our window start for sequential decode
-        let seek_frame = if first_frame > 0 {
-            Some(first_frame)
-        } else {
-            None
-        };
-
+        let seek_frame = if start_frame > 0 { Some(start_frame) } else { None };
         let path = video_path.to_path_buf();
         let cancel_clone = cancel.clone();
         let ctx_clone = ctx.clone();
         let handle = std::thread::spawn(move || {
-            video::decode_all_frames(&path, tx, cancel_clone, ctx_clone, seek_frame);
+            video::decode_all_frames_sync(&path, tx, cancel_clone, ctx_clone, seek_frame);
         });
 
         Self {
-            slots: VecDeque::from(vec![None; cache_size]),
-            first_frame,
-            cache_count,
-            result_rx: rx,
+            frame_rx: rx,
             cancel,
             _handle: Some(handle),
+            current_frame: start_frame,
             total_frames,
             fps,
+            video_path: video_path.to_path_buf(),
             ctx: ctx.clone(),
         }
     }
 
-    fn cache_size(&self) -> usize {
-        self.cache_count * 2 + 1
-    }
-
-    /// Poll for decoded frames from the background thread.
-    /// Call every frame from update().
-    pub fn poll(&mut self) {
-        // Collect up to 10 frames per poll to avoid blocking the UI
-        for _ in 0..10 {
-            match self.result_rx.try_recv() {
-                Ok(result) => {
-                    if let Some(slot) = self.slot_index_for(result.frame_index) {
-                        if let Some(image) = result.image {
-                            let name = format!("frame_{}", result.frame_index);
-                            let texture = self.ctx.load_texture(
-                                name,
-                                image,
-                                egui::TextureOptions::LINEAR,
-                            );
-                            self.slots[slot] = Some(texture);
-                        }
-                    }
-                    // Frames outside window are silently dropped
-                }
-                Err(mpsc::TryRecvError::Empty) => break,
-                Err(mpsc::TryRecvError::Disconnected) => break,
+    /// Try to receive the next decoded frame. Returns a TextureHandle if
+    /// a frame is ready. Call this at playback rate (every 1/fps seconds)
+    /// or once after seeking to get the frame at the seek position.
+    pub fn poll_next_frame(&mut self) -> Option<egui::TextureHandle> {
+        match self.frame_rx.try_recv() {
+            Ok(result) => {
+                self.current_frame = result.frame_index;
+                result.image.map(|img| {
+                    self.ctx.load_texture(
+                        format!("vframe_{}", result.frame_index),
+                        img,
+                        egui::TextureOptions::LINEAR,
+                    )
+                })
             }
+            Err(_) => None,
         }
     }
 
-    /// Get the texture for a frame index, if cached.
-    pub fn texture_for(&self, frame_index: usize) -> Option<egui::TextureHandle> {
-        let slot = self.slot_index_for(frame_index)?;
-        self.slots.get(slot).and_then(|opt| opt.clone())
-    }
-
-    /// Check if a frame is cached (for playback gating).
-    pub fn is_cached(&self, frame_index: usize) -> bool {
-        self.texture_for(frame_index).is_some()
-    }
-
-    /// Shift the window forward for sequential navigation.
-    pub fn navigate_forward(&mut self, new_frame: usize) -> Option<egui::TextureHandle> {
-        let current_slot = new_frame.checked_sub(self.first_frame)?;
-        if current_slot > self.cache_count && self.first_frame + self.cache_size() < self.total_frames {
-            self.slots.pop_front();
-            self.slots.push_back(None);
-            self.first_frame += 1;
-        }
-        self.texture_for(new_frame)
-    }
-
-    /// Shift the window backward for sequential navigation.
-    pub fn navigate_backward(&mut self, new_frame: usize) -> Option<egui::TextureHandle> {
-        let current_slot = new_frame.checked_sub(self.first_frame).unwrap_or(0);
-        if current_slot < self.cache_count && self.first_frame > 0 {
-            self.slots.pop_back();
-            self.slots.push_front(None);
-            self.first_frame -= 1;
-        }
-        self.texture_for(new_frame)
-    }
-
-    /// Restart decode from a new position (slider jump).
-    pub fn jump_to(&mut self, center_frame: usize, video_path: &Path) {
-        // Cancel old decoder
+    /// Seek to a new position. Cancels the current decoder thread and
+    /// starts a new one from the seek position.
+    pub fn seek(&mut self, frame: usize) {
         self.cancel.store(true, Ordering::Relaxed);
 
-        let cache_size = self.cache_size();
-        let max_first = self.total_frames.saturating_sub(cache_size);
-        self.first_frame = center_frame.saturating_sub(self.cache_count).min(max_first);
-        self.slots.clear();
-        self.slots.resize(cache_size, None);
-
-        // Start new decoder
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(PLAYER_BUFFER_SIZE);
         let cancel = Arc::new(AtomicBool::new(false));
         self.cancel = cancel.clone();
-        self.result_rx = rx;
+        self.frame_rx = rx;
+        self.current_frame = frame;
 
-        let seek_frame = if self.first_frame > 0 {
-            Some(self.first_frame)
-        } else {
-            None
-        };
-        let path = video_path.to_path_buf();
+        let seek_frame = if frame > 0 { Some(frame) } else { None };
+        let path = self.video_path.clone();
         let ctx = self.ctx.clone();
         self._handle = Some(std::thread::spawn(move || {
-            video::decode_all_frames(&path, tx, cancel, ctx, seek_frame);
+            video::decode_all_frames_sync(&path, tx, cancel, ctx, seek_frame);
         }));
-    }
-
-    fn slot_index_for(&self, frame_index: usize) -> Option<usize> {
-        let idx = frame_index.checked_sub(self.first_frame)?;
-        if idx < self.slots.len() {
-            Some(idx)
-        } else {
-            None
-        }
     }
 }
 
-impl Drop for FrameCache {
+impl Drop for VideoPlayer {
     fn drop(&mut self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
