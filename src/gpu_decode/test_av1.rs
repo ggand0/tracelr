@@ -293,6 +293,109 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_shared_device_same_thread() {
+        // Test: create GpuSetup (like the app does), then decode on the SAME thread.
+        // This tests if the shared device works when there's no concurrent wgpu access.
+        let video_path = match get_test_video() {
+            Some(p) => p,
+            None => { eprintln!("Skipping: no test video"); return; }
+        };
+
+        // Test with a device that has BOTH graphics and video queues
+        // but is NOT wrapped by wgpu. If this works, the issue is device_from_raw.
+        use ash::vk as avk;
+        let entry = unsafe { ash::Entry::load().unwrap() };
+        let app_info = avk::ApplicationInfo::default()
+            .application_name(c"test")
+            .api_version(avk::make_api_version(0, 1, 3, 0));
+        let inst_create = avk::InstanceCreateInfo::default().application_info(&app_info);
+        let instance = unsafe { entry.create_instance(&inst_create, None).unwrap() };
+        let pdevs = unsafe { instance.enumerate_physical_devices().unwrap() };
+        let pdev = pdevs.into_iter().find(|p| {
+            let props = unsafe { instance.get_physical_device_properties(*p) };
+            props.device_type == avk::PhysicalDeviceType::DISCRETE_GPU
+        }).unwrap();
+
+        let qf = unsafe { instance.get_physical_device_queue_family_properties(pdev) };
+        let gfx_family = qf.iter().enumerate().find(|(_, p)| p.queue_flags.contains(avk::QueueFlags::GRAPHICS)).unwrap().0 as u32;
+        let vid_family = qf.iter().enumerate().find(|(_, p)| p.queue_flags.contains(avk::QueueFlags::VIDEO_DECODE_KHR)).unwrap().0 as u32;
+        eprintln!("gfx_family={}, vid_family={}", gfx_family, vid_family);
+
+        let qp = [1.0f32];
+        // ONLY video decode queue — no graphics queue
+        let qi = [
+            avk::DeviceQueueCreateInfo::default().queue_family_index(vid_family).queue_priorities(&qp),
+        ];
+        let exts = [
+            // No swapchain — video only
+            avk::KHR_VIDEO_QUEUE_NAME.as_ptr(),
+            avk::KHR_VIDEO_DECODE_QUEUE_NAME.as_ptr(),
+            avk::KHR_VIDEO_DECODE_AV1_NAME.as_ptr(),
+            avk::KHR_SYNCHRONIZATION2_NAME.as_ptr(),
+        ];
+        let mut s2 = avk::PhysicalDeviceSynchronization2Features::default().synchronization2(true);
+        let dc = avk::DeviceCreateInfo::default()
+            .queue_create_infos(&qi)
+            .enabled_extension_names(&exts)
+            .push_next(&mut s2);
+        let device = unsafe { instance.create_device(pdev, &dc, None).unwrap() };
+        eprintln!("Created device with video-decode ONLY (no graphics queue)");
+
+        // Parse sequence header
+        ffmpeg_next::init().unwrap();
+        let mut ictx = ffmpeg_next::format::input(&video_path).unwrap();
+        let video_stream_index;
+        let decoder_params;
+        {
+            let stream = ictx.streams().best(ffmpeg_next::media::Type::Video).unwrap();
+            video_stream_index = stream.index();
+            decoder_params = stream.parameters();
+        }
+        let ctx = ffmpeg_next::codec::context::Context::from_parameters(decoder_params).unwrap();
+        let extradata = unsafe {
+            let ptr = (*ctx.as_ptr()).extradata;
+            let size = (*ctx.as_ptr()).extradata_size as usize;
+            std::slice::from_raw_parts(ptr, size)
+        };
+        let obu_data = &extradata[4..];
+        let obus = av1_obu::parse_obu_headers(obu_data).unwrap();
+        let seq_obu = obus.iter().find(|o| o.obu_type == av1_obu::ObuType::SequenceHeader).unwrap();
+        let seq = av1_obu::parse_sequence_header(&obu_data[seq_obu.data_offset..seq_obu.data_offset + seq_obu.data_size]).unwrap();
+
+        // Drop the test device — use AV1Decoder::new() which creates its own
+        unsafe { device.destroy_device(None); instance.destroy_instance(None); }
+
+        let mut decoder = vulkan_decoder::AV1Decoder::new(&seq).unwrap();
+        eprintln!("AV1 decoder created with new() (own device)");
+
+        // Decode 10 frames on THIS thread (no wgpu rendering happening)
+        let mut decoded = 0;
+        for (stream, packet) in ictx.packets() {
+            if stream.index() != video_stream_index { continue; }
+            let pkt_data = packet.data().unwrap();
+            match decoder.decode_frame(pkt_data) {
+                Ok(out) => {
+                    decoded += 1;
+                    eprintln!("Frame {}: type={:?}", decoded, out.frame_type);
+                }
+                Err(e) => {
+                    eprintln!("Decode failed at frame {}: {}", decoded + 1, e);
+                    break;
+                }
+            }
+            if decoded >= 10 { break; }
+        }
+        eprintln!("Decoded {} frames on multi-queue device", decoded);
+        assert!(decoded >= 10, "Expected 10 frames, got {}", decoded);
+
+        drop(decoder);
+        unsafe {
+            device.destroy_device(None);
+            instance.destroy_instance(None);
+        }
+    }
+
+    #[test]
     fn test_decode_multiple_frames() {
         let video_path = match get_test_video() {
             Some(p) => p,

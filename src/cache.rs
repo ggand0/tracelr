@@ -463,7 +463,7 @@ impl VideoPlayer {
         let cancel_clone = cancel.clone();
         let ctx_clone = ctx.clone();
         let handle = std::thread::spawn(move || {
-            // Software decode — GPU decode must run on main thread (NVIDIA driver limitation)
+            // Software decode on background thread (GPU decode runs on main thread)
             video::decode_all_frames_sync(&path, tx, cancel_clone, ctx_clone, seek_frame);
         });
 
