@@ -240,17 +240,68 @@ impl App {
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
             let (done, total) = self.annotations.progress(ds.episodes.len());
-            format!(
-                "lerobot-explorer - {} [{}/{}]",
-                dir_name, done, total,
-            )
+            format!("lerobot-explorer - {} [{}/{}]", dir_name, done, total)
         } else {
             "lerobot-explorer".to_string()
         };
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
     }
 
+    fn annotation_json_path(&self) -> Option<String> {
+        self.dataset
+            .as_ref()
+            .map(|ds| ds.root.join("annotations.json").to_string_lossy().to_string())
+    }
+
     // -- UI panels --
+
+    fn show_menu_bar(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
+            egui::menu::bar(ui, |ui| {
+                ui.menu_button("File", |ui| {
+                    if ui.button("Open Dataset...").clicked() {
+                        ui.close_menu();
+                        if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                            self.load_dataset(&path);
+                            if self.dataset.is_some() {
+                                self.load_current_frame(ctx);
+                            }
+                        }
+                    }
+                    if ui.button("Save Annotations  Ctrl+S").clicked() {
+                        ui.close_menu();
+                        self.save_annotations();
+                    }
+                    if ui
+                        .add_enabled(self.dataset.is_some(), egui::Button::new("Export to LeRobot..."))
+                        .clicked()
+                    {
+                        ui.close_menu();
+                        if let Some(ds) = &self.dataset {
+                            match self.annotations.export_lerobot(ds) {
+                                Ok(()) => log::info!("Exported to LeRobot format"),
+                                Err(e) => log::error!("Export failed: {}", e),
+                            }
+                        }
+                    }
+                    ui.separator();
+                    if ui.button("Quit").clicked() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                });
+
+                // FPS display (right-aligned)
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        egui::RichText::new(self.perf.fps_text())
+                            .monospace()
+                            .color(self.theme.muted)
+                            .size(11.0),
+                    );
+                });
+            });
+        });
+    }
 
     fn show_episode_list(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
         let ds = match &self.dataset {
@@ -271,34 +322,46 @@ impl App {
 
         let mut navigate_to = None;
 
+        // Collect annotation data upfront to avoid borrow issues
+        let episode_annotations: Vec<(usize, Option<(String, egui::Color32)>)> = ds
+            .episodes
+            .iter()
+            .map(|ep| {
+                let annot = self.annotations.get(ep.episode_index).and_then(|idx| {
+                    self.annotations
+                        .prompts
+                        .get(idx)
+                        .map(|p| (p.label.clone(), p.color))
+                });
+                (ep.episode_index, annot)
+            })
+            .collect();
+
         egui::ScrollArea::vertical().show(ui, |ui| {
-            for ep in &ds.episodes {
-                let is_selected = ep.episode_index == self.current_episode;
-                let annotation = self.annotations.get(ep.episode_index);
+            for (episode_index, annot_info) in &episode_annotations {
+                let is_selected = *episode_index == self.current_episode;
 
-                let mut label_text = format!("ep {:03}", ep.episode_index);
-                if let Some(prompt_idx) = annotation {
-                    if let Some(prompt) = self.annotations.prompts.get(prompt_idx) {
-                        label_text = format!("{} - {}", label_text, prompt.label);
+                let response = ui.horizontal(|ui| {
+                    // Colored dot (left side, before text)
+                    if let Some((_, color)) = annot_info {
+                        let (rect, _) =
+                            ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                        ui.painter().circle_filled(rect.center(), 4.0, *color);
+                    } else {
+                        // Reserve space for alignment
+                        ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
                     }
-                }
 
-                let response = ui.selectable_label(is_selected, &label_text);
-
-                // Draw colored dot for annotated episodes
-                if let Some(prompt_idx) = annotation {
-                    if let Some(prompt) = self.annotations.prompts.get(prompt_idx) {
-                        let rect = response.rect;
-                        let dot_pos = egui::pos2(
-                            rect.right() - 8.0,
-                            rect.center().y,
-                        );
-                        ui.painter().circle_filled(dot_pos, 4.0, prompt.color);
+                    let mut label_text = format!("ep {:03}", episode_index);
+                    if let Some((label, _)) = annot_info {
+                        label_text = format!("{} - {}", label_text, label);
                     }
-                }
 
-                if response.clicked() {
-                    navigate_to = Some(ep.episode_index);
+                    ui.selectable_label(is_selected, &label_text)
+                });
+
+                if response.inner.clicked() {
+                    navigate_to = Some(*episode_index);
                 }
             }
         });
@@ -323,22 +386,19 @@ impl App {
         ui.separator();
 
         if let Some(ep) = ds.episodes.get(self.current_episode) {
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Episode:").color(self.theme.muted));
-                ui.label(format!("{}", ep.episode_index));
-            });
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Frames:").color(self.theme.muted));
-                ui.label(format!("{}", ep.length));
-            });
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Duration:").color(self.theme.muted));
-                ui.label(format!("{:.1}s", ds.episode_duration(self.current_episode)));
-            });
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("FPS:").color(self.theme.muted));
-                ui.label(format!("{}", ds.info.fps));
-            });
+            let info_rows: Vec<(&str, String)> = vec![
+                ("Episode:", format!("{} / {}", ep.episode_index, ds.episodes.len())),
+                ("Frames:", format!("{}", ep.length)),
+                ("Duration:", format!("{:.1}s", ep.length as f64 / ds.info.fps as f64)),
+                ("FPS:", format!("{}", ds.info.fps)),
+            ];
+
+            for (label, value) in &info_rows {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(*label).color(self.theme.muted));
+                    ui.label(value);
+                });
+            }
 
             // Camera selector
             if ds.info.video_keys.len() > 1 {
@@ -350,7 +410,6 @@ impl App {
                         .get(self.current_video_key_index)
                         .cloned()
                         .unwrap_or_default();
-                    // Strip the "observation.images." prefix for display
                     let display_name = current_key
                         .strip_prefix("observation.images.")
                         .unwrap_or(&current_key);
@@ -392,7 +451,8 @@ impl App {
             let shortcut = format!("[{}] ", i + 1);
 
             let response = ui.horizontal(|ui| {
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
                 ui.painter().circle_filled(rect.center(), 6.0, *color);
 
                 let text = format!("{}{}", shortcut, label);
@@ -413,18 +473,29 @@ impl App {
             }
         }
 
+        // Save button (always visible)
         ui.add_space(8.0);
-        if self.annotations.dirty {
-            ui.horizontal(|ui| {
+        ui.horizontal(|ui| {
+            if ui.button("Save (Ctrl+S)").clicked() {
+                self.save_annotations();
+            }
+            if self.annotations.dirty {
                 ui.label(
-                    egui::RichText::new("Unsaved changes")
+                    egui::RichText::new("unsaved")
                         .color(egui::Color32::from_rgb(255, 200, 60))
                         .small(),
                 );
-                if ui.small_button("Save (Ctrl+S)").clicked() {
-                    self.save_annotations();
-                }
-            });
+            }
+        });
+
+        // Annotation file path
+        if let Some(path) = self.annotation_json_path() {
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new(path)
+                    .color(self.theme.muted)
+                    .small(),
+            );
         }
     }
 
@@ -456,7 +527,7 @@ impl App {
         }
     }
 
-    fn show_nav_bar(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
+    fn show_nav_slider(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
         let total = self
             .dataset
             .as_ref()
@@ -466,32 +537,63 @@ impl App {
             return;
         }
 
-        ui.horizontal(|ui| {
-            // Episode slider
-            let mut ep = self.current_episode as f64;
-            let slider = egui::Slider::new(&mut ep, 0.0..=((total - 1) as f64))
-                .show_value(false)
-                .step_by(1.0);
-            let response = ui.add(slider);
-            if response.changed() {
-                let new_ep = ep as usize;
-                self.navigate_to_episode(new_ep, ctx);
-            }
+        let mut ep = self.current_episode as f64;
+        let slider = egui::Slider::new(&mut ep, 0.0..=((total - 1) as f64))
+            .show_value(false)
+            .step_by(1.0);
+        let response = ui.add_sized([ui.available_width(), 20.0], slider);
+        if response.changed() {
+            let new_ep = ep as usize;
+            self.navigate_to_episode(new_ep, ctx);
+        }
+    }
 
-            // Episode counter
+    fn show_footer(&self, ui: &mut egui::Ui) {
+        let ds = match &self.dataset {
+            Some(ds) => ds,
+            None => return,
+        };
+
+        let total = ds.episodes.len();
+        let ep = ds.episodes.get(self.current_episode);
+        let font = egui::FontId::monospace(13.0);
+        let bright = egui::Color32::from_gray(200);
+        let dim = egui::Color32::from_gray(160);
+
+        ui.horizontal(|ui| {
+            // Episode index
             ui.label(
-                egui::RichText::new(format!("ep {} / {}", self.current_episode, total))
-                    .monospace()
-                    .color(self.theme.muted),
+                egui::RichText::new(format!("ep {:03}", self.current_episode))
+                    .font(font.clone())
+                    .color(bright),
             );
 
-            // FPS
+            // Resolution
+            if let Some(tex) = &self.current_texture {
+                ui.separator();
+                ui.label(
+                    egui::RichText::new(format!("{}x{}", tex.size()[0], tex.size()[1]))
+                        .font(font.clone())
+                        .color(dim),
+                );
+            }
+
+            // Frame count
+            if let Some(ep) = ep {
+                ui.separator();
+                ui.label(
+                    egui::RichText::new(format!("{} frames", ep.length))
+                        .font(font.clone())
+                        .color(dim),
+                );
+            }
+
+            // Right-aligned: index / total
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(
-                    egui::RichText::new(self.perf.fps_text())
-                        .monospace()
-                        .color(self.theme.muted)
-                        .size(11.0),
+                    egui::RichText::new(format!("{} / {}", self.current_episode + 1, total))
+                        .font(font.clone())
+                        .color(bright),
                 );
             });
         });
@@ -519,6 +621,9 @@ impl eframe::App for App {
         self.handle_keyboard(ctx);
         self.update_title(ctx);
 
+        // Menu bar
+        self.show_menu_bar(ctx);
+
         // Left panel: episode list
         egui::SidePanel::left("episode_list")
             .default_width(160.0)
@@ -535,16 +640,21 @@ impl eframe::App for App {
                 self.show_info_panel(ui);
             });
 
-        // Bottom panel: navigation bar
-        egui::TopBottomPanel::bottom("nav_bar")
-            .exact_height(32.0)
+        // Bottom: slider row + footer row
+        egui::TopBottomPanel::bottom("footer")
+            .exact_height(22.0)
             .show(ctx, |ui| {
-                self.show_nav_bar(ctx, ui);
+                self.show_footer(ui);
+            });
+
+        egui::TopBottomPanel::bottom("nav_slider")
+            .exact_height(28.0)
+            .show(ctx, |ui| {
+                self.show_nav_slider(ctx, ui);
             });
 
         // Central panel: frame display
         egui::CentralPanel::default().show(ctx, |ui| {
-            // Show error if any
             if let Some(err) = &self.loading_error {
                 ui.colored_label(egui::Color32::from_rgb(255, 100, 100), err);
                 ui.separator();
