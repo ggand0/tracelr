@@ -423,8 +423,7 @@ pub(crate) fn decode_all_frames_gpu(
 
     // 3. Create GPU decoder using shared Vulkan device
     use crate::gpu_decode::wgpu_device;
-    // Use shared device path if available (single VkDevice for graphics + video)
-    // Falls back to standalone decoder if shared GPU not set up
+    // Use shared device (single VkDevice for graphics + video decode)
     let decoder_result = if let Some(gpu) = wgpu_device::get_shared_gpu() {
         vulkan_decoder::AV1Decoder::from_shared(
             gpu.entry.clone(),
@@ -476,6 +475,13 @@ pub(crate) fn decode_all_frames_gpu(
             None => continue,
         };
 
+        // TEMP: only decode key frames to isolate inter frame crash
+        let obus = av1_obu::parse_obu_headers(pkt_data).ok();
+        let has_seq = obus.as_ref().map(|o| o.iter().any(|x| x.obu_type == av1_obu::ObuType::SequenceHeader)).unwrap_or(false);
+        if !has_seq && frame_count > 0 {
+            // Skip inter frames — only decode packets that contain a sequence header (key frames)
+            continue;
+        }
         match decoder.decode_frame(pkt_data) {
             Ok(output) => {
                 if frame_count == 0 {
@@ -485,10 +491,7 @@ pub(crate) fn decode_all_frames_gpu(
                     continue;
                 }
 
-                frame_count += 1;
-                if frame_count <= 5 { log::info!("GPU frame {} type={:?} decoded ok", frame_count, output.frame_type); }
-                continue;
-                #[allow(unreachable_code)]
+                // Readback + NV12→RGBA
                 match decoder.read_back_nv12(output.dpb_slot) {
                     Ok((y_data, uv_data)) => {
                         let rgba =

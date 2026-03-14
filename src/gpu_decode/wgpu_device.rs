@@ -10,6 +10,18 @@ use ash::vk;
 use std::ffi::CStr;
 use std::sync::{Arc, Mutex, OnceLock};
 
+/// Global mutex to serialize Vulkan video decode with wgpu rendering.
+/// NVIDIA driver appears to crash when video decode commands are recorded
+/// concurrently with graphics commands on the same VkDevice.
+static VK_DEVICE_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
+
+pub fn vk_device_lock() -> std::sync::MutexGuard<'static, ()> {
+    VK_DEVICE_MUTEX
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap()
+}
+
 /// Global shared GPU state, set once at app startup.
 /// Background threads can clone the Arc to access the shared Vulkan device.
 static SHARED_GPU: OnceLock<Arc<SharedGpuState>> = OnceLock::new();

@@ -745,6 +745,71 @@ impl AV1Decoder {
         })
     }
 
+    /// Create an AV1 decoder with a video-decode-only VkDevice.
+    /// Uses a separate VkDevice from wgpu's graphics device, but only claims
+    /// the video decode queue (family 3), avoiding conflicts.
+    pub fn new_video_only(seq: &SequenceHeader) -> Result<Self, VulkanDecoderError> {
+        let width = seq.max_frame_width_minus_1 as u32 + 1;
+        let height = seq.max_frame_height_minus_1 as u32 + 1;
+
+        log::info!("Creating video-only AV1 decoder for {}x{}", width, height);
+
+        let entry = unsafe {
+            ash::Entry::load().map_err(|e| {
+                VulkanDecoderError::SessionCreationFailed(format!("Load: {:?}", e))
+            })?
+        };
+
+        let app_info = vk::ApplicationInfo::default()
+            .application_name(c"lerobot-video-decode")
+            .api_version(vk::make_api_version(0, 1, 3, 0));
+
+        let instance_create = vk::InstanceCreateInfo::default().application_info(&app_info);
+        let instance = unsafe { entry.create_instance(&instance_create, None)? };
+
+        let physical_devices = unsafe { instance.enumerate_physical_devices()? };
+        let physical_device = physical_devices
+            .into_iter()
+            .find(|pdev| check_av1_decode_support(&instance, *pdev).is_ok())
+            .ok_or(VulkanDecoderError::NoAV1Support)?;
+
+        let (video_queue_family, _) = check_av1_decode_support(&instance, physical_device)?;
+
+        // Create device with ONLY video decode queue — no graphics queue
+        let queue_priorities = [1.0f32];
+        let queue_infos = [vk::DeviceQueueCreateInfo::default()
+            .queue_family_index(video_queue_family)
+            .queue_priorities(&queue_priorities)];
+
+        let device_extensions = [
+            vk::KHR_VIDEO_QUEUE_NAME.as_ptr(),
+            vk::KHR_VIDEO_DECODE_QUEUE_NAME.as_ptr(),
+            vk::KHR_VIDEO_DECODE_AV1_NAME.as_ptr(),
+            vk::KHR_SYNCHRONIZATION2_NAME.as_ptr(),
+        ];
+
+        let mut sync2 =
+            vk::PhysicalDeviceSynchronization2Features::default().synchronization2(true);
+        let device_create = vk::DeviceCreateInfo::default()
+            .queue_create_infos(&queue_infos)
+            .enabled_extension_names(&device_extensions)
+            .push_next(&mut sync2);
+
+        let device = unsafe { instance.create_device(physical_device, &device_create, None)? };
+
+        // Now delegate to from_shared with owns_device=true
+        let mut decoder = Self::from_shared(
+            entry,
+            instance.clone(),
+            device.clone(),
+            physical_device,
+            video_queue_family,
+            seq,
+        )?;
+        decoder.owns_device = true;
+        Ok(decoder)
+    }
+
     /// Get the decoded frame dimensions.
     pub fn dimensions(&self) -> (u32, u32) {
         (self.width, self.height)
@@ -1057,7 +1122,8 @@ impl AV1Decoder {
                 .video_session_parameters(self.session_params)
                 .reference_slots(&reference_slots);
 
-            // Ensure ALL device work is complete (including wgpu's graphics queue)
+            // Serialize with wgpu rendering to avoid driver crash
+            let _lock = super::wgpu_device::vk_device_lock();
             self.device.device_wait_idle()?;
 
             log::debug!("  calling cmd_begin_video_coding_khr");
@@ -1072,6 +1138,13 @@ impl AV1Decoder {
             }
 
             // Decode
+            log::debug!(
+                "  cmd_decode: refs={}, ref_slots={:?}, dst_slot={}, data_size={}",
+                reference_slots.len(),
+                &ref_slot_indices,
+                dst_slot,
+                data_size,
+            );
             log::debug!("  calling cmd_decode_video_khr");
             let decode_fn = ash::khr::video_decode_queue::Device::new(
                 &self.instance,
