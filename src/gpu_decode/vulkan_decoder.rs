@@ -1261,11 +1261,33 @@ impl AV1Decoder {
                 self.frame_count, fh.frame_type, fh.is_intra_frame, num_refs, dst_slot
             );
 
-            // Begin video coding
+            // Begin video coding — must include ALL DPB slots (active with index, inactive with -1)
+            // per vk-video's pattern and Vulkan spec requirements.
+            let mut all_dpb_pic_resources: [vk::VideoPictureResourceInfoKHR; 8] =
+                std::array::from_fn(|i| {
+                    vk::VideoPictureResourceInfoKHR::default()
+                        .coded_offset(vk::Offset2D { x: 0, y: 0 })
+                        .coded_extent(vk::Extent2D {
+                            width: self.width,
+                            height: self.height,
+                        })
+                        .base_array_layer(0)
+                        .image_view_binding(self.dpb_views[i])
+                });
+            let all_dpb_slots: Vec<vk::VideoReferenceSlotInfoKHR> = (0..8)
+                .map(|i| vk::VideoReferenceSlotInfoKHR {
+                    s_type: vk::StructureType::VIDEO_REFERENCE_SLOT_INFO_KHR,
+                    p_next: std::ptr::null(),
+                    slot_index: if self.dpb_slot_active[i] { i as i32 } else { -1 },
+                    p_picture_resource: &all_dpb_pic_resources[i] as *const _,
+                    _marker: std::marker::PhantomData,
+                })
+                .collect();
+
             let begin_info = vk::VideoBeginCodingInfoKHR::default()
                 .video_session(self.video_session)
                 .video_session_parameters(self.session_params)
-                .reference_slots(&reference_slots);
+                .reference_slots(&all_dpb_slots);
 
             log::debug!("  calling cmd_begin_video_coding_khr");
             (self.video_queue_fn.fp().cmd_begin_video_coding_khr)(cmd, &begin_info);
