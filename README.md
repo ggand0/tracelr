@@ -1,0 +1,111 @@
+# lerobot-explorer
+
+A fast desktop tool for exploring and annotating [LeRobot](https://github.com/huggingface/lerobot) datasets. Built with Rust, egui, and ffmpeg for real-time video playback of robot demonstration episodes.
+
+Designed for annotating text prompts on atomic pick-and-place episodes for Vision-Language-Action (VLA) model training.
+
+## Features
+
+- **Video playback** — auto-plays episodes at native framerate with Play/Pause (Space), frame stepping (Arrow keys), and scrubbing (slider drag)
+- **Episode navigation** — slide through episodes with arrow keys, skate mode (Shift+Arrow for continuous advance), or click the episode list
+- **Annotation** — assign text prompts to episodes via keyboard shortcuts (1-9) or clickable prompt cards, with color-coded status in the episode list
+- **Configurable prompts** — define prompts per dataset via `prompts.yaml` (see below)
+- **Persistence** — annotations save to `annotations.json` in the dataset directory, auto-loaded on reopen
+- **Export** — export annotations to LeRobot's `tasks.jsonl` + `episodes.jsonl` format
+- **Drag and drop** — drop a dataset folder onto the window to open it
+- **Episode cache** — sliding window cache preloads neighboring episodes for instant navigation
+- **Menu bar** — File (Open, Save, Export, Quit), View (Cache Overlay)
+
+## Supported LeRobot formats
+
+| Format | Version | Video layout | Episode metadata | Status |
+|--------|---------|-------------|-----------------|--------|
+| LeRobot v2.1 | `codebase_version: "v2.1"` | One mp4 per episode (`episode_000000.mp4`) | `meta/episodes.jsonl` | Supported |
+| LeRobot v3.0 | `codebase_version: "v3.0"` | Concatenated mp4 with timestamp ranges (`file-000.mp4`) | `meta/episodes/chunk-NNN/file-NNN.parquet` | Supported |
+
+Both formats are auto-detected from `meta/info.json`.
+
+## Install
+
+### Prerequisites
+
+- Rust toolchain (rustup)
+- FFmpeg development libraries:
+  ```
+  # Ubuntu/Debian
+  sudo apt install libavcodec-dev libavformat-dev libswscale-dev libavutil-dev
+  ```
+
+### Build
+
+```bash
+cargo build --profile opt-dev
+```
+
+The `opt-dev` profile gives release-level optimization with faster incremental builds (no LTO).
+
+## Usage
+
+```bash
+# Open a dataset directory
+cargo run --profile opt-dev -- /path/to/lerobot/dataset/
+
+# Or launch and drag-drop a dataset folder onto the window
+cargo run --profile opt-dev
+
+# With debug logging
+RUST_LOG=lerobot_explorer=debug cargo run --profile opt-dev -- /path/to/dataset/
+```
+
+### Keyboard shortcuts
+
+| Key | Action |
+|-----|--------|
+| `Left` / `Right` | Previous / next episode |
+| `Shift+Left/Right` | Skate (continuous advance while held) |
+| `Home` / `End` | First / last episode |
+| `Space` | Play / pause video |
+| `1`-`9` | Assign prompt to current episode |
+| `Escape` | Exit video mode (show thumbnail) |
+| `Enter` | Re-enter video mode |
+| `Ctrl+S` | Save annotations |
+
+### Configurable prompts
+
+Create a `prompts.yaml` in the dataset directory or `~/.config/lerobot-explorer/prompts.yaml`:
+
+```yaml
+prompts:
+  - label: "Red cube"
+    prompt: "Pick up the red cube and place it in the bowl"
+    color: [220, 60, 60]
+
+  - label: "Blue cube"
+    prompt: "Pick up the blue cube and place it in the bowl"
+    color: [60, 100, 220]
+```
+
+See [`configs/prompts.example.yaml`](configs/prompts.example.yaml) for a full example.
+
+Search order: dataset directory > user config > built-in defaults.
+
+### Annotation output
+
+Annotations save to `<dataset_dir>/annotations.json`:
+
+```json
+{
+  "dataset_root": "/path/to/dataset",
+  "prompts": [
+    "Pick up the red cube and place it in the bowl",
+    "Pick up the blue cube and place it in the bowl"
+  ],
+  "annotations": {
+    "0": 0,
+    "1": 1,
+    "2": 0
+  }
+}
+```
+
+Use File > Export to LeRobot to write `meta/tasks.jsonl` and update `meta/episodes.jsonl` with task assignments.
