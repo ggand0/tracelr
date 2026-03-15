@@ -269,6 +269,13 @@ mod tests {
                             eprintln!("Y non-zero: {} / {}", y_nonzero, y.len());
                             eprintln!("UV non-zero: {} / {}", uv_nonzero, uv.len());
                             eprintln!("UV first 32 bytes: {:?}", &uv[..32.min(uv.len())]);
+                            let y_min = y.iter().copied().min().unwrap_or(0);
+                            let y_max = y.iter().copied().max().unwrap_or(0);
+                            let y_avg: f64 = y.iter().map(|&b| b as f64).sum::<f64>() / y.len() as f64;
+                            eprintln!("Y range: min={}, max={}, avg={:.1}", y_min, y_max, y_avg);
+                            let uv_min = uv.iter().copied().min().unwrap_or(0);
+                            let uv_max = uv.iter().copied().max().unwrap_or(0);
+                            eprintln!("UV range: min={}, max={}", uv_min, uv_max);
 
                             let (w, h) = decoder.dimensions();
                             let rgba = vulkan_decoder::AV1Decoder::nv12_to_rgba(&y, &uv, w, h);
