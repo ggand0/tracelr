@@ -37,6 +37,7 @@ pub struct App {
     viewing_video: bool,
     player: Option<VideoPlayer>,
     current_frame: usize,
+    episode_start_frame: usize, // absolute frame where current episode starts
     playing: bool,
     last_frame_time: Option<Instant>,
     frame_slider_dragging: bool,
@@ -66,6 +67,7 @@ impl App {
             viewing_video: false,
             player: None,
             current_frame: 0,
+            episode_start_frame: 0,
             playing: false,
             last_frame_time: None,
             frame_slider_dragging: false,
@@ -353,7 +355,8 @@ impl App {
         let player_total = start_frame + total_frames;
         let player = VideoPlayer::new(ctx, &video_path, player_total, fps, start_frame);
         self.player = Some(player);
-        self.current_frame = 0;
+        self.current_frame = start_frame;
+        self.episode_start_frame = start_frame;
         self.viewing_video = true;
         self.playing = true;
         self.last_frame_time = None;
@@ -993,12 +996,15 @@ impl App {
     // -- Video mode UI --
 
     fn show_frame_slider(&mut self, _ctx: &egui::Context, ui: &mut egui::Ui) {
-        let total_frames = self.player.as_ref().map(|p| p.total_frames).unwrap_or(0);
-        if total_frames <= 1 {
+        let ep_length = self.dataset.as_ref()
+            .and_then(|ds| ds.episodes.get(self.current_episode))
+            .map(|ep| ep.length)
+            .unwrap_or(0);
+        if ep_length <= 1 {
             return;
         }
 
-        let max = total_frames - 1;
+        let max = ep_length - 1;
         let accent = self.theme.accent;
 
         let slider_width = ui.available_width();
@@ -1013,27 +1019,29 @@ impl App {
         let cy = rect.center().y;
         let handle_range = (rect.left() + handle_radius)..=(rect.right() - handle_radius);
 
-        let mut idx = self.current_frame;
+        // Episode-relative frame position
+        let ep_frame = self.current_frame.saturating_sub(self.episode_start_frame);
+        let mut idx = ep_frame;
 
         if let Some(pos) = response.interact_pointer_pos() {
             let usable = rect.x_range().shrink(handle_radius);
             let drag_t = ((pos.x - usable.min) / (usable.max - usable.min)).clamp(0.0, 1.0);
-            let new_idx = (max as f32 * drag_t).round() as usize;
+            let new_ep_frame = (max as f32 * drag_t).round() as usize;
 
             if !self.frame_slider_dragging {
                 self.frame_slider_dragging = true;
-                self.playing = false; // Pause on slider grab
+                self.playing = false;
             }
 
-            if new_idx != self.current_frame {
-                self.current_frame = new_idx;
+            let new_abs_frame = self.episode_start_frame + new_ep_frame;
+            if new_abs_frame != self.current_frame {
+                self.current_frame = new_abs_frame;
             }
-            idx = self.current_frame;
+            idx = new_ep_frame;
         }
 
         if response.drag_stopped() && self.frame_slider_dragging {
             self.frame_slider_dragging = false;
-            // Seek decoder to new position
             if let Some(player) = &mut self.player {
                 player.seek(self.current_frame);
             }
@@ -1044,7 +1052,7 @@ impl App {
             egui::pos2(rect.left(), cy - rail_radius),
             egui::pos2(rect.right(), cy + rail_radius),
         );
-        let t = idx as f32 / max as f32;
+        let t = if max > 0 { idx as f32 / max as f32 } else { 0.0 };
         let handle_x = egui::lerp(handle_range, t);
 
         ui.painter()
@@ -1059,26 +1067,44 @@ impl App {
         );
     }
 
-    fn show_frame_footer(&self, ui: &mut egui::Ui) {
+    fn show_frame_footer(&mut self, ui: &mut egui::Ui) {
         let font = egui::FontId::monospace(13.0);
         let bright = egui::Color32::from_gray(200);
         let dim = egui::Color32::from_gray(160);
 
-        let total_frames = self.player.as_ref().map(|p| p.total_frames).unwrap_or(0);
+        let ep_length = self.dataset.as_ref()
+            .and_then(|ds| ds.episodes.get(self.current_episode))
+            .map(|ep| ep.length)
+            .unwrap_or(0);
         let fps = self.player.as_ref().map(|p| p.fps).unwrap_or(30);
+        let ep_frame = self.current_frame.saturating_sub(self.episode_start_frame);
 
         ui.horizontal(|ui| {
-            // Play state
+            // Clickable play/pause button
             let play_icon = if self.playing { "\u{23f8}" } else { "\u{25b6}" };
+            let btn = ui.button(
+                egui::RichText::new(play_icon)
+                    .font(font.clone())
+                    .color(bright),
+            );
+            if btn.clicked() {
+                self.playing = !self.playing;
+                if self.playing {
+                    self.last_frame_time = Some(Instant::now());
+                } else {
+                    self.last_frame_time = None;
+                }
+            }
+
             ui.label(
-                egui::RichText::new(format!("{} ep {:03}", play_icon, self.current_episode))
+                egui::RichText::new(format!("ep {:03}", self.current_episode))
                     .font(font.clone())
                     .color(bright),
             );
 
-            // Timecode
-            let time_s = self.current_frame as f64 / fps as f64;
-            let total_s = total_frames as f64 / fps as f64;
+            // Timecode (episode-relative)
+            let time_s = ep_frame as f64 / fps as f64;
+            let total_s = ep_length as f64 / fps as f64;
             ui.separator();
             ui.label(
                 egui::RichText::new(format!("{:.1}s / {:.1}s", time_s, total_s))
@@ -1086,13 +1112,13 @@ impl App {
                     .color(dim),
             );
 
-            // Right-aligned: frame index
+            // Right-aligned: frame index (episode-relative)
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(
                     egui::RichText::new(format!(
                         "frame {} / {}",
-                        self.current_frame + 1,
-                        total_frames
+                        ep_frame + 1,
+                        ep_length
                     ))
                     .font(font.clone())
                     .color(bright),
