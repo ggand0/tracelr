@@ -909,7 +909,7 @@ impl AV1Decoder {
                                 ))
                             })?;
                     frame_header = Some(fh);
-                    frame_header_offset_in_packet = obu.data_offset;
+                    frame_header_offset_in_packet = obu.offset; // OBU start, not payload
                     // Tile data starts after the frame header within the Frame OBU
                     tile_data_offset_in_packet = obu.data_offset + header_bytes;
                 }
@@ -925,7 +925,7 @@ impl AV1Decoder {
                                 ))
                             })?;
                     frame_header = Some(fh);
-                    frame_header_offset_in_packet = obu.data_offset;
+                    frame_header_offset_in_packet = obu.offset; // OBU start, not payload
                     tile_data_offset_in_packet = obu.data_offset + header_bytes;
                 }
                 _ => {}
@@ -1037,8 +1037,10 @@ impl AV1Decoder {
         let width_in_sbs: [u16; 1] = [sb_cols.saturating_sub(1) as u16];
         let height_in_sbs: [u16; 1] = [sb_rows.saturating_sub(1) as u16];
 
+        let mut tile_info_flags: vk::native::StdVideoAV1TileInfoFlags = unsafe { std::mem::zeroed() };
+        tile_info_flags.set_uniform_tile_spacing_flag(1);
         let tile_info = vk::native::StdVideoAV1TileInfo {
-            flags: unsafe { std::mem::zeroed() },
+            flags: tile_info_flags,
             TileCols: 1,
             TileRows: 1,
             context_update_tile_id: 0,
@@ -1154,7 +1156,7 @@ impl AV1Decoder {
             av1_pic_info = av1_pic_info.tile_sizes(&tile_sizes);
         }
 
-        // 6. Destination picture resource
+        // 6. Destination picture resource — same as DPB slot (coincide mode)
         let dst_pic_resource = vk::VideoPictureResourceInfoKHR::default()
             .coded_offset(vk::Offset2D { x: 0, y: 0 })
             .coded_extent(vk::Extent2D {
@@ -1164,12 +1166,14 @@ impl AV1Decoder {
             .base_array_layer(0)
             .image_view_binding(self.dpb_views[dst_slot]);
 
-        // Setup slot for the decoded picture
+        let setup_pic_resource = dst_pic_resource;
+
+        // Setup slot for the reconstructed picture (stored in DPB for future reference)
         let dst_slot_info = vk::VideoReferenceSlotInfoKHR {
             s_type: vk::StructureType::VIDEO_REFERENCE_SLOT_INFO_KHR,
             p_next: std::ptr::null(),
             slot_index: dst_slot as i32,
-            p_picture_resource: &dst_pic_resource as *const _,
+            p_picture_resource: &setup_pic_resource as *const _,
             _marker: std::marker::PhantomData,
         };
 
@@ -1302,9 +1306,7 @@ impl AV1Decoder {
         Ok(0)
     }
 
-    /// Read back the decoded frame from GPU to CPU as NV12 data.
-    /// Returns (y_plane, uv_plane) where y is width*height and uv is width*height/2.
-    /// Uses the persistent staging buffer (no per-frame allocation).
+    /// Read back the decoded frame from the DPB slot to CPU as NV12 data.
     pub fn read_back_nv12(
         &self,
         dpb_slot: usize,
@@ -1509,7 +1511,7 @@ impl Drop for AV1Decoder {
             self.device.free_memory(self.staging_memory, None);
             self.device
                 .destroy_image_view(self.output_view, None);
-            self.device.destroy_image(self.output_image, None);
+            self.device.destroy_image(self.dpb_images[dpb_slot], None);
             self.device.free_memory(self.output_memory, None);
 
             for view in &self.dpb_views {
