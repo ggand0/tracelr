@@ -43,11 +43,41 @@ fn default_color() -> [u8; 3] {
 
 // -- Annotation JSON file --
 
+/// On-disk annotation format. `annotations` maps integer episode index
+/// to prompt index. serde_json renders BTreeMap<usize, usize> with
+/// integer-sortable string keys ("0", "1", "2", ..., "10", "11").
+/// We use a custom serializer to keep keys as integers in the JSON.
 #[derive(Serialize, Deserialize)]
 struct AnnotationFile {
     dataset_root: String,
     prompts: Vec<String>,
-    annotations: BTreeMap<String, usize>,
+    /// episode_index → prompt_index, sorted by episode.
+    #[serde(serialize_with = "serialize_int_keys", deserialize_with = "deserialize_int_keys")]
+    annotations: BTreeMap<usize, usize>,
+}
+
+fn serialize_int_keys<S: serde::Serializer>(
+    map: &BTreeMap<usize, usize>,
+    s: S,
+) -> Result<S::Ok, S::Error> {
+    // Serialize as a JSON object with string keys (JSON requirement)
+    // but BTreeMap<usize> ensures numeric order
+    use serde::ser::SerializeMap;
+    let mut m = s.serialize_map(Some(map.len()))?;
+    for (k, v) in map {
+        m.serialize_entry(&k.to_string(), v)?;
+    }
+    m.end()
+}
+
+fn deserialize_int_keys<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<BTreeMap<usize, usize>, D::Error> {
+    let string_map: BTreeMap<String, usize> = BTreeMap::deserialize(d)?;
+    Ok(string_map
+        .into_iter()
+        .filter_map(|(k, v)| k.parse::<usize>().ok().map(|k| (k, v)))
+        .collect())
 }
 
 impl AnnotationState {
@@ -169,11 +199,7 @@ impl AnnotationState {
         let file = AnnotationFile {
             dataset_root: dataset_root.to_string(),
             prompts: self.prompts.iter().map(|p| p.prompt.clone()).collect(),
-            annotations: self
-                .annotations
-                .iter()
-                .map(|(k, v)| (k.to_string(), *v))
-                .collect(),
+            annotations: self.annotations.clone(),
         };
         let json = serde_json::to_string_pretty(&file)?;
         fs::write(path, json)?;
@@ -184,11 +210,7 @@ impl AnnotationState {
     pub fn load_json(&mut self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         let text = fs::read_to_string(path)?;
         let file: AnnotationFile = serde_json::from_str(&text)?;
-        self.annotations = file
-            .annotations
-            .into_iter()
-            .map(|(k, v)| (k.parse::<usize>().unwrap_or(0), v))
-            .collect();
+        self.annotations = file.annotations;
         self.dirty = false;
         log::info!(
             "Loaded {} annotations from {}",
