@@ -22,6 +22,27 @@ pub(crate) struct AnnotationState {
     pub dirty: bool,
 }
 
+// -- YAML prompt config --
+
+#[derive(Serialize, Deserialize)]
+struct PromptsConfig {
+    prompts: Vec<PromptEntry>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct PromptEntry {
+    label: String,
+    prompt: String,
+    #[serde(default = "default_color")]
+    color: [u8; 3],
+}
+
+fn default_color() -> [u8; 3] {
+    [140, 140, 140]
+}
+
+// -- Annotation JSON file --
+
 #[derive(Serialize, Deserialize)]
 struct AnnotationFile {
     dataset_root: String,
@@ -30,8 +51,62 @@ struct AnnotationFile {
 }
 
 impl AnnotationState {
-    /// Create annotation state for the cube organization task (4 color prompts).
-    pub fn new_cube_task() -> Self {
+    /// Load prompts from YAML config. Search order:
+    /// 1. `<dataset_dir>/prompts.yaml`
+    /// 2. `~/.config/lerobot-explorer/prompts.yaml`
+    /// 3. Hardcoded cube task defaults
+    pub fn load_prompts(dataset_root: Option<&Path>) -> Self {
+        // 1. Dataset-specific prompts
+        if let Some(root) = dataset_root {
+            let dataset_prompts = root.join("prompts.yaml");
+            if dataset_prompts.exists() {
+                if let Ok(state) = Self::from_yaml(&dataset_prompts) {
+                    log::info!("Loaded prompts from {}", dataset_prompts.display());
+                    return state;
+                }
+            }
+        }
+
+        // 2. User default prompts
+        if let Some(config_dir) = dirs::config_dir() {
+            let user_prompts = config_dir.join("lerobot-explorer").join("prompts.yaml");
+            if user_prompts.exists() {
+                if let Ok(state) = Self::from_yaml(&user_prompts) {
+                    log::info!("Loaded prompts from {}", user_prompts.display());
+                    return state;
+                }
+            }
+        }
+
+        // 3. Hardcoded defaults
+        log::info!("Using default cube task prompts");
+        Self::default_cube_task()
+    }
+
+    /// Parse prompts from a YAML file.
+    fn from_yaml(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+        let text = fs::read_to_string(path)?;
+        let config: PromptsConfig = serde_yaml::from_str(&text)?;
+
+        let prompts = config
+            .prompts
+            .into_iter()
+            .map(|e| PromptCard {
+                label: e.label,
+                prompt: e.prompt,
+                color: egui::Color32::from_rgb(e.color[0], e.color[1], e.color[2]),
+            })
+            .collect();
+
+        Ok(Self {
+            annotations: BTreeMap::new(),
+            prompts,
+            dirty: false,
+        })
+    }
+
+    /// Hardcoded cube organization task prompts.
+    fn default_cube_task() -> Self {
         Self {
             annotations: BTreeMap::new(),
             prompts: vec![
@@ -115,7 +190,11 @@ impl AnnotationState {
             .map(|(k, v)| (k.parse::<usize>().unwrap_or(0), v))
             .collect();
         self.dirty = false;
-        log::info!("Loaded {} annotations from {}", self.annotations.len(), path.display());
+        log::info!(
+            "Loaded {} annotations from {}",
+            self.annotations.len(),
+            path.display()
+        );
         Ok(())
     }
 
@@ -137,7 +216,11 @@ impl AnnotationState {
             tasks_lines.push(serde_json::to_string(&line)?);
         }
         fs::write(&tasks_path, tasks_lines.join("\n") + "\n")?;
-        log::info!("Exported {} tasks to {}", self.prompts.len(), tasks_path.display());
+        log::info!(
+            "Exported {} tasks to {}",
+            self.prompts.len(),
+            tasks_path.display()
+        );
 
         // Write episodes.jsonl with updated task assignments
         let episodes_path = meta_dir.join("episodes.jsonl");

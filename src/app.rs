@@ -50,7 +50,7 @@ impl App {
     pub fn new(_cc: &eframe::CreationContext, initial_path: Option<PathBuf>) -> Self {
         let mut app = Self {
             dataset: None,
-            annotations: AnnotationState::new_cube_task(),
+            annotations: AnnotationState::load_prompts(initial_path.as_deref()),
             current_episode: 0,
             current_video_key_index: 0,
             current_texture: None,
@@ -107,6 +107,9 @@ impl App {
                 self.current_episode = 0;
                 self.current_texture = None;
                 self.loading_error = None;
+
+                // Load prompts config for this dataset
+                self.annotations = AnnotationState::load_prompts(Some(path));
 
                 // Try to load saved annotations
                 let annot_path = path.join("annotations.json");
@@ -402,14 +405,19 @@ impl App {
             escape_pressed = i.key_pressed(egui::Key::Escape);
             space_pressed = i.key_pressed(egui::Key::Space);
 
-            // Annotation shortcuts (1-4) — work in both modes
+            // Annotation shortcuts (1-9) — work in both modes
             for (key, idx) in [
                 (egui::Key::Num1, 0),
                 (egui::Key::Num2, 1),
                 (egui::Key::Num3, 2),
                 (egui::Key::Num4, 3),
+                (egui::Key::Num5, 4),
+                (egui::Key::Num6, 5),
+                (egui::Key::Num7, 6),
+                (egui::Key::Num8, 7),
+                (egui::Key::Num9, 8),
             ] {
-                if i.key_pressed(key) {
+                if i.key_pressed(key) && idx < self.annotations.prompts.len() {
                     self.annotations.set(self.current_episode, idx);
                 }
             }
