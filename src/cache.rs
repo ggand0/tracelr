@@ -212,7 +212,7 @@ impl EpisodeCache {
         episode_index: usize,
         ctx: &egui::Context,
     ) -> Option<egui::TextureHandle> {
-        match video::decode_middle_frame(video_path) {
+        match video::decode_middle_frame(video_path, None) {
             Ok(image) => {
                 let name = format!("ep_{:03}_sync", episode_index);
                 Some(ctx.load_texture(name, image, egui::TextureOptions::LINEAR))

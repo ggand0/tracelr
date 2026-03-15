@@ -142,8 +142,9 @@ impl App {
     #[allow(dead_code)]
     fn load_current_frame_sync(&mut self, ctx: &egui::Context) {
         if let Some(path) = self.video_paths.get(self.current_episode) {
+            let seek_range = self.episode_seek_range();
             let start = std::time::Instant::now();
-            match video::decode_middle_frame(path) {
+            match video::decode_middle_frame(path, seek_range) {
                 Ok(image) => {
                     let decode_ms = start.elapsed().as_secs_f64() * 1000.0;
                     log::debug!(
@@ -273,7 +274,12 @@ impl App {
 
         // Sync decode and insert into LRU
         if let Some(path) = self.video_paths.get(episode) {
-            match video::decode_middle_frame(path) {
+            let seek_range = self.dataset.as_ref().and_then(|ds| {
+                let vk = ds.info.video_keys.get(self.current_video_key_index)?;
+                let (from, to) = ds.episode_time_range(episode, vk);
+                if to > from { Some((from, to)) } else { None }
+            });
+            match video::decode_middle_frame(path, seek_range) {
                 Ok(image) => {
                     let name = format!("ep_{:03}_slider", episode);
                     self.current_texture = Some(ctx.load_texture(
@@ -590,6 +596,13 @@ impl App {
             "lerobot-explorer".to_string()
         };
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+    }
+
+    fn episode_seek_range(&self) -> Option<(f64, f64)> {
+        let ds = self.dataset.as_ref()?;
+        let vk = ds.info.video_keys.get(self.current_video_key_index)?;
+        let (from, to) = ds.episode_time_range(self.current_episode, vk);
+        if to > from { Some((from, to)) } else { None }
     }
 
     fn annotation_json_path(&self) -> Option<String> {

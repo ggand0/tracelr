@@ -25,8 +25,11 @@ pub(crate) struct DecodeResult {
 ///
 /// Opens the mp4, seeks to the midpoint, decodes the first available frame
 /// after the seek position, and converts to RGBA.
+/// `seek_range` is an optional (from_seconds, to_seconds) range for v3.0 datasets
+/// where multiple episodes share one video file.
 pub(crate) fn decode_middle_frame(
     video_path: &Path,
+    seek_range: Option<(f64, f64)>,
 ) -> Result<egui::ColorImage, Box<dyn std::error::Error + Send + Sync>> {
     ensure_ffmpeg_init();
 
@@ -49,13 +52,19 @@ pub(crate) fn decode_middle_frame(
         .decoder()
         .video()?;
 
-    // Seek to approximately the middle of the file.
-    // duration() returns microseconds (AV_TIME_BASE = 1_000_000).
-    let duration = ictx.duration();
-    if duration > 0 && total_frames > 2 {
-        let target_us = duration / 2;
-        // seek() takes a timestamp range in AV_TIME_BASE units.
-        // Seek backward to the nearest keyframe before target.
+    // Seek to the midpoint of the episode's time range
+    let target_us = if let Some((from_s, to_s)) = seek_range {
+        let mid_s = (from_s + to_s) / 2.0;
+        (mid_s * 1_000_000.0) as i64
+    } else {
+        let duration = ictx.duration();
+        if duration > 0 && total_frames > 2 {
+            duration / 2
+        } else {
+            0
+        }
+    };
+    if target_us > 0 {
         let _ = ictx.seek(target_us, ..target_us);
     }
 
@@ -337,7 +346,7 @@ pub(crate) fn decode_middle_frame_timed(
     episode_index: usize,
 ) -> DecodeResult {
     let start = Instant::now();
-    let image = decode_middle_frame(video_path)
+    let image = decode_middle_frame(video_path, None)
         .map_err(|e| {
             log::warn!(
                 "Failed to decode episode {} from {}: {}",
