@@ -911,7 +911,7 @@ impl AV1Decoder {
                             })?,
                     );
                     frame_obu_offset = obu.offset;
-                    frame_header_offset_in_obu = obu.data_offset - obu.offset;
+                    frame_header_offset_in_obu = obu.data_offset;
                 }
                 av1_obu::ObuType::FrameHeader => {
                     let payload =
@@ -926,7 +926,7 @@ impl AV1Decoder {
                             })?,
                     );
                     frame_obu_offset = obu.offset;
-                    frame_header_offset_in_obu = obu.data_offset - obu.offset;
+                    frame_header_offset_in_obu = obu.data_offset;
                 }
                 _ => {}
             }
@@ -1052,7 +1052,11 @@ impl AV1Decoder {
 
         let quantization = vk::native::StdVideoAV1Quantization {
             flags: unsafe { std::mem::zeroed() },
-            base_q_idx: fh.base_q_idx,
+            base_q_idx: {
+                eprintln!("  base_q_idx={}, delta_q_y_dc={}, frame_header_offset={}",
+                    fh.base_q_idx, fh.delta_q_y_dc, frame_header_offset_in_obu);
+                fh.base_q_idx
+            },
             DeltaQYDc: fh.delta_q_y_dc,
             DeltaQUDc: fh.delta_q_u_dc,
             DeltaQUAc: fh.delta_q_u_ac,

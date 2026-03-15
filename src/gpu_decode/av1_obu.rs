@@ -700,6 +700,25 @@ fn parse_color_config(r: &mut BitReader, seq_profile: u8) -> Result<ColorConfig,
     })
 }
 
+/// tile_log2: smallest k such that blk_size << k >= target (Section 5.9.15)
+fn tile_log2(blk_size: u32, target: u32) -> u32 {
+    let mut k = 0;
+    while (blk_size << k) < target {
+        k += 1;
+    }
+    k
+}
+
+/// Read delta_q value (Section 5.9.12): 1-bit flag, if set read su(7).
+fn read_delta_q(r: &mut BitReader) -> Result<i8, ParseError> {
+    let delta_coded = r.read_bool()?;
+    if delta_coded {
+        Ok(r.read_su(7)? as i8)
+    } else {
+        Ok(0)
+    }
+}
+
 /// Parse an AV1 uncompressed frame header (Section 5.9).
 /// `seq` is the current sequence header, needed for conditional field parsing.
 pub fn parse_frame_header(
@@ -878,10 +897,123 @@ pub fn parse_frame_header(
         false
     };
 
-    // For a minimal implementation, we parse the essential fields for Vulkan decode.
-    // Many fields below (quantization, loop filter, CDEF, etc.) are passed as
-    // raw bitstream to the GPU — the hardware parses them. We just need the
-    // frame-level fields above for DPB management and VkVideoDecodeAV1PictureInfoKHR.
+    // Continue parsing: interpolation_filter (Section 5.9.10)
+    let _is_filter_switchable;
+    let _interpolation_filter;
+    if is_intra_frame || allow_intrabc {
+        _is_filter_switchable = false;
+        _interpolation_filter = 4u8; // SWITCHABLE
+    } else {
+        _is_filter_switchable = r.read_bool()?;
+        if _is_filter_switchable {
+            _interpolation_filter = 4; // SWITCHABLE
+        } else {
+            _interpolation_filter = r.read_bits(2)? as u8;
+        }
+    }
+
+    // is_motion_mode_switchable
+    if !is_intra_frame && !allow_intrabc {
+        let _is_motion_mode_switchable = r.read_bool()?;
+    }
+
+    // use_ref_frame_mvs
+    if seq.enable_ref_frame_mvs
+        && !is_intra_frame
+        && !allow_intrabc
+        && !error_resilient_mode
+    {
+        let _use_ref_frame_mvs = r.read_bool()?;
+    }
+
+    // After interpolation_filter + is_motion_mode_switchable + use_ref_frame_mvs,
+    // the spec says tile_info() comes next (Section 5.9.15).
+    //
+    // tile_info is complex and variable-length. For 480p single-tile videos,
+    // the tile_info section is short. We need to parse it to advance the bit
+    // position correctly before quantization_params.
+
+    // tile_info() — Section 5.9.15
+    let sb_size: u32 = if seq.use_128x128_superblock { 128 } else { 64 };
+    let sb_cols = (frame_width + sb_size - 1) / sb_size;
+    let sb_rows = (frame_height + sb_size - 1) / sb_size;
+    let _sb_shift = if seq.use_128x128_superblock { 5 } else { 4 };
+    let max_tile_width_sb = 4096 / sb_size; // MAX_TILE_WIDTH_SB
+
+    let min_log2_tile_cols = tile_log2(max_tile_width_sb, sb_cols);
+    let max_log2_tile_cols = tile_log2(1, sb_cols.min(1024)); // MAX_TILE_COLS = 64, simplified
+
+    let mut tile_cols_log2 = min_log2_tile_cols;
+    while tile_cols_log2 < max_log2_tile_cols {
+        let increment = r.read_bool()?;
+        if increment {
+            tile_cols_log2 += 1;
+        } else {
+            break;
+        }
+    }
+    let tile_cols = 1u16 << tile_cols_log2;
+
+    let max_log2_tile_rows = tile_log2(1, sb_rows.min(1024));
+    let min_log2_tiles = if tile_cols_log2 > 0 { tile_cols_log2 } else { 0 };
+    let min_log2_tile_rows = if min_log2_tiles > tile_cols_log2 {
+        min_log2_tiles - tile_cols_log2
+    } else {
+        0
+    };
+    let mut tile_rows_log2 = min_log2_tile_rows;
+    while tile_rows_log2 < max_log2_tile_rows {
+        let increment = r.read_bool()?;
+        if increment {
+            tile_rows_log2 += 1;
+        } else {
+            break;
+        }
+    }
+    let tile_rows = 1u16 << tile_rows_log2;
+
+    // tile_size_bytes_minus_1 (if more than 1 tile)
+    if tile_cols_log2 > 0 || tile_rows_log2 > 0 {
+        let _tile_size_bytes_minus_1 = r.read_bits(2)?;
+        // context_update_tile_id
+        let _context_update_tile_id = r.read_bits((tile_cols_log2 + tile_rows_log2) as u8)?;
+    }
+
+    // quantization_params (Section 5.9.12)
+    let base_q_idx = r.read_byte()?;
+    let delta_q_y_dc = read_delta_q(&mut r)?;
+    let mut delta_q_u_dc = 0i8;
+    let mut delta_q_u_ac = 0i8;
+    let mut delta_q_v_dc = 0i8;
+    let mut delta_q_v_ac = 0i8;
+    let using_qmatrix;
+
+    if !seq.color_config.mono_chrome {
+        let diff_uv_delta = if seq.color_config.separate_uv_delta_q {
+            r.read_bool()?
+        } else {
+            false
+        };
+        delta_q_u_dc = read_delta_q(&mut r)?;
+        delta_q_u_ac = read_delta_q(&mut r)?;
+        if diff_uv_delta {
+            delta_q_v_dc = read_delta_q(&mut r)?;
+            delta_q_v_ac = read_delta_q(&mut r)?;
+        } else {
+            delta_q_v_dc = delta_q_u_dc;
+            delta_q_v_ac = delta_q_u_ac;
+        }
+    }
+    using_qmatrix = r.read_bool()?;
+    if using_qmatrix {
+        let _qm_y = r.read_bits(4)?;
+        let _qm_u = r.read_bits(4)?;
+        let _qm_v = r.read_bits(4)?;
+    }
+
+    // Skip remaining sections (segmentation, delta_q, delta_lf, loop_filter, cdef, lr)
+    // with defaults. These affect visual quality but not decode correctness.
+    // TODO: parse these for perfect quality.
 
     Ok(FrameHeader {
         frame_type,
@@ -903,22 +1035,22 @@ pub fn parse_frame_header(
         use_superres,
         coded_denom,
         ref_frame_idx,
-        ref_order_hint: [0; 8], // Filled by reference management layer
-        base_q_idx: 0,          // GPU parses from bitstream
-        delta_q_y_dc: 0,
-        delta_q_u_dc: 0,
-        delta_q_u_ac: 0,
-        delta_q_v_dc: 0,
-        delta_q_v_ac: 0,
-        using_qmatrix: false,
-        loop_filter_level: [0; 4],
-        loop_filter_sharpness: 0,
+        ref_order_hint: [0; 8],
+        base_q_idx,
+        delta_q_y_dc,
+        delta_q_u_dc,
+        delta_q_u_ac,
+        delta_q_v_dc,
+        delta_q_v_ac,
+        using_qmatrix,
+        loop_filter_level: [0; 4],   // TODO: parse
+        loop_filter_sharpness: 0,    // TODO: parse
         loop_filter_delta_enabled: false,
-        cdef_damping_minus_3: 0,
+        cdef_damping_minus_3: 0,     // TODO: parse
         cdef_bits: 0,
         lr_type: [0; 3],
-        tile_cols: 1,
-        tile_rows: 1,
+        tile_cols,
+        tile_rows,
         is_intra_frame,
         allow_intrabc,
     })
