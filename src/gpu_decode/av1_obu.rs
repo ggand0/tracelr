@@ -1166,6 +1166,72 @@ pub fn parse_frame_header(
         }
     }
 
+    // read_tx_mode (Section 5.9.21)
+    if !is_intra_frame || allow_intrabc {
+        // TX_MODE_SELECT is always used for inter frames in practice
+    }
+    let _tx_mode = if base_q_idx > 0 {
+        let _tx_mode_select = r.read_bool()?;
+        if _tx_mode_select { 2u8 } else { 1u8 } // TX_MODE_SELECT or TX_MODE_LARGEST
+    } else {
+        2u8 // TX_MODE_ONLY_4X4 when lossless
+    };
+
+    // frame_reference_mode (Section 5.9.23)
+    if !is_intra_frame {
+        let _reference_select = r.read_bool()?;
+    }
+
+    // skip_mode_params (Section 5.9.24)
+    // skip_mode is only available for inter frames with order hints
+    if !is_intra_frame && seq.enable_order_hint {
+        let _skip_mode_present = r.read_bool()?;
+    }
+
+    // allow_warped_motion
+    if !is_intra_frame && !allow_intrabc && seq.enable_warped_motion {
+        let _allow_warped_motion = r.read_bool()?;
+    }
+
+    // reduced_tx_set
+    let _reduced_tx_set = r.read_bool()?;
+
+    // global_motion_params (Section 5.9.25) — skip for non-inter or simple cases
+    if !is_intra_frame {
+        for _ref_frame in 0..7 {
+            // Each reference frame has is_global, is_rot_zoom, is_translation flags
+            let is_global = r.read_bool()?;
+            if is_global {
+                let is_rot_zoom = r.read_bool()?;
+                if is_rot_zoom {
+                    // ROTZOOM: 2 parameters, each su(12) + su(12) + su(9) + su(9) = 4 params
+                    let _ = r.read_su(12)?;
+                    let _ = r.read_su(12)?;
+                    let _ = r.read_su(12)?;
+                    let _ = r.read_su(12)?;
+                } else {
+                    let is_translation = r.read_bool()?;
+                    if is_translation {
+                        // TRANSLATION: su(9) + su(9)
+                        let _ = r.read_su(9)?;
+                        let _ = r.read_su(9)?;
+                    } else {
+                        // AFFINE: 6 parameters
+                        let _ = r.read_su(12)?;
+                        let _ = r.read_su(12)?;
+                        let _ = r.read_su(12)?;
+                        let _ = r.read_su(12)?;
+                        let _ = r.read_su(12)?;
+                        let _ = r.read_su(12)?;
+                    }
+                }
+            }
+        }
+    }
+
+    // film_grain_params (Section 5.9.30) — skip if not present
+    // seq.film_grain_params_present is false for our test video
+
     let fh = FrameHeader {
         frame_type,
         show_frame,

@@ -935,36 +935,26 @@ impl AV1Decoder {
         let fh = frame_header
             .ok_or_else(|| VulkanDecoderError::DecodeError("No frame header found".into()))?;
 
-        // 2. Upload ONLY the Frame OBU to the GPU buffer (not the full packet).
-        // This matches FFmpeg's approach where frameHeaderOffset=0.
-        let frame_obu = obus.iter().find(|o| {
-            o.obu_type == av1_obu::ObuType::Frame || o.obu_type == av1_obu::ObuType::TileGroup
-                || o.obu_type == av1_obu::ObuType::FrameHeader
-        });
-        // Upload only the Frame OBU PAYLOAD (not the OBU header).
-        // This way frameHeaderOffset=0 matches FFmpeg's convention.
-        let (bitstream_data, frame_obu_start) = match frame_obu {
-            Some(obu) => (&packet_data[obu.data_offset..obu.data_offset + obu.data_size], obu.data_offset),
-            None => (packet_data, 0),
-        };
+        // 2. Upload the ENTIRE packet to the GPU buffer.
+        // The buffer contains all OBUs (SequenceHeader + Frame).
+        // frameHeaderOffset points to the Frame OBU within the buffer.
+        let bitstream_data = packet_data;
         let data_size = bitstream_data.len();
         if data_size > self.bitstream_capacity {
             return Err(VulkanDecoderError::DecodeError(format!(
-                "Frame OBU too large: {} > {}",
+                "Packet too large: {} > {}",
                 data_size, self.bitstream_capacity
             )));
         }
 
-        // Recalculate offsets relative to what we uploaded (Frame OBU including its header)
-        let fh_offset_in_buffer = frame_header_offset_in_packet.saturating_sub(frame_obu_start);
-        let tile_offset_in_buffer = tile_data_offset_in_packet.saturating_sub(frame_obu_start);
-
-        // Note: frame_header_offset_in_packet was set to obu.offset (OBU start).
-        // But Vulkan's frameHeaderOffset should point to the uncompressed header data,
-        // which starts at obu.data_offset (past the OBU type+size header bytes).
-        // However, since we upload from obu.offset, the OBU header is at the start
-        // of our buffer. The uncompressed header starts at (obu.data_offset - obu.offset)
-        // bytes into the buffer.
+        let frame_obu = obus.iter().find(|o| {
+            o.obu_type == av1_obu::ObuType::Frame || o.obu_type == av1_obu::ObuType::TileGroup
+                || o.obu_type == av1_obu::ObuType::FrameHeader
+        });
+        // frameHeaderOffset points to the Frame OBU header within the packet
+        let fh_offset_in_buffer = frame_obu.map(|o| o.offset).unwrap_or(0);
+        // tile_offsets points to the tile data within the packet
+        let tile_offset_in_buffer = tile_data_offset_in_packet;
 
         unsafe {
             let ptr = self.device.map_memory(
@@ -1150,25 +1140,13 @@ impl AV1Decoder {
             pFilmGrain: std::ptr::null(),
         };
 
-        // For VkVideoDecodeAV1PictureInfoKHR, we need frame header offset and tile info.
-        // tile_offsets: byte offset from start of bitstream buffer to each tile's data.
-        // For a Frame OBU, tile data starts after the parsed frame header.
-        let tile_offsets = [tile_data_offset_in_packet as u32];
-
-        // Calculate tile data size: Frame OBU payload size minus frame header bytes
-        let frame_obu = obus.iter().find(|o| {
-            o.obu_type == av1_obu::ObuType::Frame || o.obu_type == av1_obu::ObuType::TileGroup
-        });
-        let tile_data_size = frame_obu
-            .map(|o| {
-                let header_bytes_in_obu = tile_data_offset_in_packet - o.data_offset;
-                (o.data_size - header_bytes_in_obu) as u32
-            })
-            .unwrap_or(0);
-        let tile_sizes = [tile_data_size];
-
-        // Use offsets relative to the Frame OBU data we uploaded
+        // tile_offsets: byte offset from buffer start to the compressed tile payload.
+        // tile_sizes: byte size of the compressed tile payload.
+        // Per Vulkan spec: these point to the actual tile compressed data,
+        // NOT to any OBU headers or tile group framing.
         let tile_offsets = [tile_offset_in_buffer as u32];
+        let tile_data_size = (data_size - tile_offset_in_buffer) as u32;
+        let tile_sizes = [tile_data_size];
 
         eprintln!("  tile: fh_offset={}, tile_offset={}, tile_size={}, buf_size={}, first_bytes={:02x?}",
             fh_offset_in_buffer, tile_offset_in_buffer, tile_sizes[0], data_size,
