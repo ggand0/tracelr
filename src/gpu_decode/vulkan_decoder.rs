@@ -892,41 +892,41 @@ impl AV1Decoder {
             .map_err(|e| VulkanDecoderError::DecodeError(format!("OBU parse: {}", e)))?;
 
         let mut frame_header: Option<FrameHeader> = None;
-        let mut frame_obu_offset = 0usize;
-        let mut frame_header_offset_in_obu = 0usize;
+        let mut frame_header_offset_in_packet = 0usize;
+        let mut tile_data_offset_in_packet = 0usize;
 
         for obu in &obus {
             match obu.obu_type {
                 av1_obu::ObuType::Frame => {
-                    // Frame OBU = frame header + tile group combined
                     let payload =
                         &packet_data[obu.data_offset..obu.data_offset + obu.data_size];
-                    frame_header = Some(
+                    let (fh, header_bytes) =
                         av1_obu::parse_frame_header(payload, &self.sequence_header)
                             .map_err(|e| {
                                 VulkanDecoderError::DecodeError(format!(
                                     "Frame header parse: {}",
                                     e
                                 ))
-                            })?,
-                    );
-                    frame_obu_offset = obu.offset;
-                    frame_header_offset_in_obu = obu.data_offset;
+                            })?;
+                    frame_header = Some(fh);
+                    frame_header_offset_in_packet = obu.data_offset;
+                    // Tile data starts after the frame header within the Frame OBU
+                    tile_data_offset_in_packet = obu.data_offset + header_bytes;
                 }
                 av1_obu::ObuType::FrameHeader => {
                     let payload =
                         &packet_data[obu.data_offset..obu.data_offset + obu.data_size];
-                    frame_header = Some(
+                    let (fh, header_bytes) =
                         av1_obu::parse_frame_header(payload, &self.sequence_header)
                             .map_err(|e| {
                                 VulkanDecoderError::DecodeError(format!(
                                     "Frame header parse: {}",
                                     e
                                 ))
-                            })?,
-                    );
-                    frame_obu_offset = obu.offset;
-                    frame_header_offset_in_obu = obu.data_offset;
+                            })?;
+                    frame_header = Some(fh);
+                    frame_header_offset_in_packet = obu.data_offset;
+                    tile_data_offset_in_packet = obu.data_offset + header_bytes;
                 }
                 _ => {}
             }
@@ -1053,8 +1053,8 @@ impl AV1Decoder {
         let quantization = vk::native::StdVideoAV1Quantization {
             flags: unsafe { std::mem::zeroed() },
             base_q_idx: {
-                eprintln!("  base_q_idx={}, delta_q_y_dc={}, frame_header_offset={}",
-                    fh.base_q_idx, fh.delta_q_y_dc, frame_header_offset_in_obu);
+                eprintln!("  base_q_idx={}, delta_q_y_dc={}, fh_offset={}, tile_offset={}",
+                    fh.base_q_idx, fh.delta_q_y_dc, frame_header_offset_in_packet, tile_data_offset_in_packet);
                 fh.base_q_idx
             },
             DeltaQYDc: fh.delta_q_y_dc,
@@ -1077,10 +1077,21 @@ impl AV1Decoder {
             loop_filter_mode_deltas: [0, 0],
         };
 
-        let cdef: vk::native::StdVideoAV1CDEF = unsafe { std::mem::zeroed() };
+        let cdef = vk::native::StdVideoAV1CDEF {
+            cdef_damping_minus_3: fh.cdef_damping_minus_3,
+            cdef_bits: fh.cdef_bits,
+            cdef_y_pri_strength: [0; 8], // TODO: pass from parser
+            cdef_y_sec_strength: [0; 8],
+            cdef_uv_pri_strength: [0; 8],
+            cdef_uv_sec_strength: [0; 8],
+        };
 
         let loop_restoration = vk::native::StdVideoAV1LoopRestoration {
-            FrameRestorationType: [0; 3], // RESTORE_NONE
+            FrameRestorationType: [
+                fh.lr_type[0] as u32,
+                fh.lr_type[1] as u32,
+                fh.lr_type[2] as u32,
+            ],
             LoopRestorationSize: [256, 256, 256],
         };
 
@@ -1116,34 +1127,28 @@ impl AV1Decoder {
         };
 
         // For VkVideoDecodeAV1PictureInfoKHR, we need frame header offset and tile info.
-        // For a Frame OBU (combined header + tiles), the entire OBU data is the bitstream.
-        // The tile info is embedded — the GPU parses tile offsets from the bitstream.
-        // For a Frame OBU (combined header + tile group), the tile data
-        // occupies everything after the frame header. For single-tile frames
-        // at our resolution, there's one tile covering the whole frame.
-        // The tile offset is relative to the start of the bitstream buffer.
-        // For the Frame OBU, the data starts at data_offset of the OBU.
-        // We provide offset 0 and the full size as the tile.
-        let tile_offsets = [0u32]; // relative to the OBU data start
-        let tile_sizes = [data_size as u32]; // entire packet is the tile
+        // tile_offsets: byte offset from start of bitstream buffer to each tile's data.
+        // For a Frame OBU, tile data starts after the parsed frame header.
+        let tile_offsets = [tile_data_offset_in_packet as u32];
 
-        // Provide tile offsets and sizes.
-        // NVIDIA crashes if tile_sizes is wrong (e.g., using full packet size).
-        // Use the Frame OBU data size (after header) for the single tile.
+        // Calculate tile data size: Frame OBU payload size minus frame header bytes
         let frame_obu = obus.iter().find(|o| {
             o.obu_type == av1_obu::ObuType::Frame || o.obu_type == av1_obu::ObuType::TileGroup
         });
-        let tile_data_size = frame_obu.map(|o| o.data_size).unwrap_or(data_size);
-        let tile_offsets = [frame_obu.map(|o| o.data_offset as u32).unwrap_or(0)];
-        let tile_sizes = [tile_data_size as u32];
+        let tile_data_size = frame_obu
+            .map(|o| {
+                let header_bytes_in_obu = tile_data_offset_in_packet - o.data_offset;
+                (o.data_size - header_bytes_in_obu) as u32
+            })
+            .unwrap_or(0);
+        let tile_sizes = [tile_data_size];
 
-        // NVIDIA driver bug: crashes on inter frames when p_tile_sizes is non-null.
-        // Provide tile_sizes only for key frames (needed for pixel output).
-        // Inter frames inherit tile layout from their reference frames.
+        // NVIDIA driver crashes on inter frames when tile_sizes is provided.
+        // Use tile_sizes only for intra frames.
         let mut av1_pic_info = vk::VideoDecodeAV1PictureInfoKHR::default()
             .std_picture_info(&std_pic_info)
             .reference_name_slot_indices(ref_slot_indices)
-            .frame_header_offset(frame_header_offset_in_obu as u32)
+            .frame_header_offset(frame_header_offset_in_packet as u32)
             .tile_offsets(&tile_offsets);
         if fh.is_intra_frame {
             av1_pic_info = av1_pic_info.tile_sizes(&tile_sizes);

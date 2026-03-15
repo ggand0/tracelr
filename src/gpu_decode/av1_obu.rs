@@ -721,10 +721,12 @@ fn read_delta_q(r: &mut BitReader) -> Result<i8, ParseError> {
 
 /// Parse an AV1 uncompressed frame header (Section 5.9).
 /// `seq` is the current sequence header, needed for conditional field parsing.
+/// Returns (FrameHeader, header_bytes_consumed) where header_bytes_consumed
+/// can be used to calculate the tile data offset within a Frame OBU.
 pub fn parse_frame_header(
     data: &[u8],
     seq: &SequenceHeader,
-) -> Result<FrameHeader, ParseError> {
+) -> Result<(FrameHeader, usize), ParseError> {
     let mut r = BitReader::new(data);
 
     let mut show_existing_frame = false;
@@ -736,7 +738,7 @@ pub fn parse_frame_header(
         // show_existing_frame: just references an existing frame in the DPB.
         // For Vulkan decode, this is handled differently.
         let _frame_to_show = r.read_bits(3)?;
-        return Ok(FrameHeader {
+        return Ok((FrameHeader {
             frame_type: FrameType::InterFrame,
             show_frame: true,
             showable_frame: true,
@@ -774,7 +776,7 @@ pub fn parse_frame_header(
             tile_rows: 1,
             is_intra_frame: false,
             allow_intrabc: false,
-        });
+        }, 0));
     }
 
     let frame_type;
@@ -1011,11 +1013,160 @@ pub fn parse_frame_header(
         let _qm_v = r.read_bits(4)?;
     }
 
-    // Skip remaining sections (segmentation, delta_q, delta_lf, loop_filter, cdef, lr)
-    // with defaults. These affect visual quality but not decode correctness.
-    // TODO: parse these for perfect quality.
+    // segmentation_params (Section 5.9.14)
+    let _segmentation_enabled = r.read_bool()?;
+    if _segmentation_enabled {
+        if primary_ref_frame == 7 {
+            // segmentation_update_map = 1, segmentation_temporal_update = 0
+        } else {
+            let _seg_update_map = r.read_bool()?;
+            if _seg_update_map {
+                let _seg_temporal_update = r.read_bool()?;
+            }
+        }
+        let seg_update_data = r.read_bool()?;
+        if seg_update_data {
+            // Read 8 segments × 8 features
+            for _i in 0..8 {
+                for j in 0..8 {
+                    let feature_enabled = r.read_bool()?;
+                    if feature_enabled {
+                        // Feature value bits depend on feature ID
+                        let bits_to_read: u8 = match j {
+                            0 => 8, // SEG_LVL_ALT_Q
+                            1 => 6, // SEG_LVL_ALT_LF_Y_V
+                            2 => 6, // SEG_LVL_ALT_LF_Y_H
+                            3 => 6, // SEG_LVL_ALT_LF_U
+                            4 => 6, // SEG_LVL_ALT_LF_V
+                            5 => 3, // SEG_LVL_REF_FRAME
+                            6 => 0, // SEG_LVL_SKIP
+                            7 => 0, // SEG_LVL_GLOBALMV
+                            _ => 0,
+                        };
+                        if bits_to_read > 0 {
+                            // Signed value for features 0-4
+                            let _val = if j <= 4 {
+                                r.read_su(1 + bits_to_read)?
+                            } else {
+                                r.read_bits(bits_to_read)? as i32
+                            };
+                        }
+                    }
+                }
+            }
+        }
+    }
 
-    Ok(FrameHeader {
+    // delta_q_params (Section 5.9.17)
+    let mut delta_q_present = false;
+    let mut delta_q_res = 0u8;
+    if base_q_idx > 0 {
+        delta_q_present = r.read_bool()?;
+    }
+    if delta_q_present {
+        delta_q_res = r.read_bits(2)? as u8;
+    }
+
+    // delta_lf_params (Section 5.9.18)
+    let mut delta_lf_present = false;
+    let mut delta_lf_res = 0u8;
+    let mut _delta_lf_multi = false;
+    if delta_q_present {
+        if !allow_intrabc {
+            delta_lf_present = r.read_bool()?;
+        }
+        if delta_lf_present {
+            delta_lf_res = r.read_bits(2)? as u8;
+            _delta_lf_multi = r.read_bool()?;
+        }
+    }
+
+    // loop_filter_params (Section 5.9.11)
+    let mut loop_filter_level = [0u8; 4];
+    let mut loop_filter_sharpness = 0u8;
+    let mut loop_filter_delta_enabled = false;
+    let mut loop_filter_ref_deltas = [1i8, 0, 0, 0, -1, 0, -1, -1]; // AV1 defaults
+    let mut loop_filter_mode_deltas = [0i8; 2];
+
+    if !is_intra_frame && !allow_intrabc {
+        loop_filter_level[0] = r.read_bits(6)? as u8;
+        loop_filter_level[1] = r.read_bits(6)? as u8;
+        if !seq.color_config.mono_chrome && (loop_filter_level[0] != 0 || loop_filter_level[1] != 0) {
+            loop_filter_level[2] = r.read_bits(6)? as u8;
+            loop_filter_level[3] = r.read_bits(6)? as u8;
+        }
+        loop_filter_sharpness = r.read_bits(3)? as u8;
+        loop_filter_delta_enabled = r.read_bool()?;
+        if loop_filter_delta_enabled {
+            let delta_update = r.read_bool()?;
+            if delta_update {
+                for i in 0..8 {
+                    let update = r.read_bool()?;
+                    if update {
+                        loop_filter_ref_deltas[i] = r.read_su(7)? as i8;
+                    }
+                }
+                for i in 0..2 {
+                    let update = r.read_bool()?;
+                    if update {
+                        loop_filter_mode_deltas[i] = r.read_su(7)? as i8;
+                    }
+                }
+            }
+        }
+    }
+
+    // cdef_params (Section 5.9.19)
+    let mut cdef_damping_minus_3 = 0u8;
+    let mut cdef_bits = 0u8;
+    let mut cdef_y_pri_strength = [0u8; 8];
+    let mut cdef_y_sec_strength = [0u8; 8];
+    let mut cdef_uv_pri_strength = [0u8; 8];
+    let mut cdef_uv_sec_strength = [0u8; 8];
+
+    if seq.enable_cdef && !allow_intrabc {
+        cdef_damping_minus_3 = r.read_bits(2)? as u8;
+        cdef_bits = r.read_bits(2)? as u8;
+        let num_cdef = 1 << cdef_bits;
+        for i in 0..num_cdef {
+            cdef_y_pri_strength[i] = r.read_bits(4)? as u8;
+            cdef_y_sec_strength[i] = r.read_bits(2)? as u8;
+            if !seq.color_config.mono_chrome {
+                cdef_uv_pri_strength[i] = r.read_bits(4)? as u8;
+                cdef_uv_sec_strength[i] = r.read_bits(2)? as u8;
+            }
+        }
+    }
+
+    // lr_params (Section 5.9.20)
+    let mut lr_type = [0u8; 3]; // RESTORE_NONE for all planes
+    if seq.enable_restoration && !allow_intrabc {
+        let mut uses_lr = false;
+        for i in 0..3 {
+            let lr_type_val = r.read_bits(2)? as u8;
+            lr_type[i] = lr_type_val;
+            if lr_type_val != 0 {
+                uses_lr = true;
+            }
+        }
+        if uses_lr {
+            // lr_unit_shift
+            if seq.use_128x128_superblock {
+                let _lr_unit_shift = r.read_bit()?;
+            } else {
+                let _lr_unit_shift = r.read_bit()?;
+                if _lr_unit_shift != 0 {
+                    let _lr_unit_extra_shift = r.read_bit()?;
+                }
+            }
+            // lr_uv_shift
+            if !seq.color_config.mono_chrome && seq.color_config.subsampling_x && seq.color_config.subsampling_y {
+                let _lr_uv_shift = r.read_bit()?;
+            }
+        }
+    }
+
+    let fh = FrameHeader {
         frame_type,
         show_frame,
         showable_frame,
@@ -1043,17 +1194,23 @@ pub fn parse_frame_header(
         delta_q_v_dc,
         delta_q_v_ac,
         using_qmatrix,
-        loop_filter_level: [0; 4],   // TODO: parse
-        loop_filter_sharpness: 0,    // TODO: parse
-        loop_filter_delta_enabled: false,
-        cdef_damping_minus_3: 0,     // TODO: parse
-        cdef_bits: 0,
-        lr_type: [0; 3],
+        loop_filter_level,
+        loop_filter_sharpness,
+        loop_filter_delta_enabled,
+        cdef_damping_minus_3,
+        cdef_bits,
+        lr_type,
         tile_cols,
         tile_rows,
         is_intra_frame,
         allow_intrabc,
-    })
+    };
+
+    // Byte-align and report consumed bytes (tile data starts after this)
+    r.byte_align();
+    let header_bytes = r.current_byte_offset();
+
+    Ok((fh, header_bytes))
 }
 
 #[cfg(test)]
