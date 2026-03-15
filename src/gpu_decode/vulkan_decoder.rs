@@ -909,7 +909,7 @@ impl AV1Decoder {
                                 ))
                             })?;
                     frame_header = Some(fh);
-                    frame_header_offset_in_packet = obu.offset; // OBU start, not payload
+                    frame_header_offset_in_packet = obu.data_offset; // payload start
                     // Tile data starts after the frame header within the Frame OBU
                     tile_data_offset_in_packet = obu.data_offset + header_bytes;
                 }
@@ -925,7 +925,7 @@ impl AV1Decoder {
                                 ))
                             })?;
                     frame_header = Some(fh);
-                    frame_header_offset_in_packet = obu.offset; // OBU start, not payload
+                    frame_header_offset_in_packet = obu.data_offset; // payload start
                     tile_data_offset_in_packet = obu.data_offset + header_bytes;
                 }
                 _ => {}
@@ -935,14 +935,36 @@ impl AV1Decoder {
         let fh = frame_header
             .ok_or_else(|| VulkanDecoderError::DecodeError("No frame header found".into()))?;
 
-        // 2. Upload bitstream to GPU buffer
-        let data_size = packet_data.len();
+        // 2. Upload ONLY the Frame OBU to the GPU buffer (not the full packet).
+        // This matches FFmpeg's approach where frameHeaderOffset=0.
+        let frame_obu = obus.iter().find(|o| {
+            o.obu_type == av1_obu::ObuType::Frame || o.obu_type == av1_obu::ObuType::TileGroup
+                || o.obu_type == av1_obu::ObuType::FrameHeader
+        });
+        // Upload only the Frame OBU PAYLOAD (not the OBU header).
+        // This way frameHeaderOffset=0 matches FFmpeg's convention.
+        let (bitstream_data, frame_obu_start) = match frame_obu {
+            Some(obu) => (&packet_data[obu.data_offset..obu.data_offset + obu.data_size], obu.data_offset),
+            None => (packet_data, 0),
+        };
+        let data_size = bitstream_data.len();
         if data_size > self.bitstream_capacity {
             return Err(VulkanDecoderError::DecodeError(format!(
-                "Packet too large: {} > {}",
+                "Frame OBU too large: {} > {}",
                 data_size, self.bitstream_capacity
             )));
         }
+
+        // Recalculate offsets relative to what we uploaded (Frame OBU including its header)
+        let fh_offset_in_buffer = frame_header_offset_in_packet.saturating_sub(frame_obu_start);
+        let tile_offset_in_buffer = tile_data_offset_in_packet.saturating_sub(frame_obu_start);
+
+        // Note: frame_header_offset_in_packet was set to obu.offset (OBU start).
+        // But Vulkan's frameHeaderOffset should point to the uncompressed header data,
+        // which starts at obu.data_offset (past the OBU type+size header bytes).
+        // However, since we upload from obu.offset, the OBU header is at the start
+        // of our buffer. The uncompressed header starts at (obu.data_offset - obu.offset)
+        // bytes into the buffer.
 
         unsafe {
             let ptr = self.device.map_memory(
@@ -951,7 +973,7 @@ impl AV1Decoder {
                 data_size as u64,
                 vk::MemoryMapFlags::empty(),
             )? as *mut u8;
-            std::ptr::copy_nonoverlapping(packet_data.as_ptr(), ptr, data_size);
+            std::ptr::copy_nonoverlapping(bitstream_data.as_ptr(), ptr, data_size);
             self.device.unmap_memory(self.bitstream_memory);
         }
 
@@ -1145,12 +1167,19 @@ impl AV1Decoder {
             .unwrap_or(0);
         let tile_sizes = [tile_data_size];
 
-        // NVIDIA driver crashes on inter frames when tile_sizes is provided.
-        // Use tile_sizes only for intra frames.
+        // Use offsets relative to the Frame OBU data we uploaded
+        let tile_offsets = [tile_offset_in_buffer as u32];
+
+        eprintln!("  tile: fh_offset={}, tile_offset={}, tile_size={}, buf_size={}, first_bytes={:02x?}",
+            fh_offset_in_buffer, tile_offset_in_buffer, tile_sizes[0], data_size,
+            &bitstream_data[..20.min(data_size)]);
+
+        // NVIDIA driver crashes on inter frames when p_tile_sizes is non-null.
+        // Provide tile_sizes only for intra frames.
         let mut av1_pic_info = vk::VideoDecodeAV1PictureInfoKHR::default()
             .std_picture_info(&std_pic_info)
             .reference_name_slot_indices(ref_slot_indices)
-            .frame_header_offset(frame_header_offset_in_packet as u32)
+            .frame_header_offset(fh_offset_in_buffer as u32)
             .tile_offsets(&tile_offsets);
         if fh.is_intra_frame {
             av1_pic_info = av1_pic_info.tile_sizes(&tile_sizes);
@@ -1511,7 +1540,7 @@ impl Drop for AV1Decoder {
             self.device.free_memory(self.staging_memory, None);
             self.device
                 .destroy_image_view(self.output_view, None);
-            self.device.destroy_image(self.dpb_images[dpb_slot], None);
+            self.device.destroy_image(self.output_image, None);
             self.device.free_memory(self.output_memory, None);
 
             for view in &self.dpb_views {
