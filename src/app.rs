@@ -348,7 +348,10 @@ impl App {
             start_frame
         );
 
-        let player = VideoPlayer::new(ctx, &video_path, total_frames, fps, start_frame);
+        // total_frames for the player = start_frame + episode length
+        // so the player knows when the episode ends within the concatenated video
+        let player_total = start_frame + total_frames;
+        let player = VideoPlayer::new(ctx, &video_path, player_total, fps, start_frame);
         self.player = Some(player);
         self.current_frame = 0;
         self.viewing_video = true;
