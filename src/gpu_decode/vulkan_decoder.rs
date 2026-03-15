@@ -173,6 +173,8 @@ pub struct AV1Decoder {
     vbi_to_dpb: [i32; 8],
     /// Order hint stored for each VBI slot (for reference frame ordering).
     vbi_order_hint: [u8; 8],
+    /// Frame type stored for each VBI slot (for reference info).
+    vbi_frame_type: [u8; 8],
 
     // Output image (separate from DPB for display)
     output_image: vk::Image,
@@ -517,6 +519,7 @@ impl AV1Decoder {
             dpb_slot_active: [false; 8],
             vbi_to_dpb: [-1; 8],
             vbi_order_hint: [0; 8],
+            vbi_frame_type: [0; 8],
             output_image: out_img,
             output_view: out_view,
             output_memory: out_mem,
@@ -790,6 +793,7 @@ impl AV1Decoder {
             dpb_slot_active: [false; 8],
             vbi_to_dpb: [-1; 8],
             vbi_order_hint: [0; 8],
+            vbi_frame_type: [0; 8],
             output_image: out_img,
             output_view: out_view,
             output_memory: out_mem,
@@ -935,10 +939,17 @@ impl AV1Decoder {
         let fh = frame_header
             .ok_or_else(|| VulkanDecoderError::DecodeError("No frame header found".into()))?;
 
-        // 2. Upload the ENTIRE packet to the GPU buffer.
-        // The buffer contains all OBUs (SequenceHeader + Frame).
-        // frameHeaderOffset points to the Frame OBU within the buffer.
-        let bitstream_data = packet_data;
+        // 2. Upload Frame OBU PAYLOAD (stripped of OBU header type+size bytes).
+        // FFmpeg uploads raw uncompressed header + tile data, NOT complete OBUs.
+        // frameHeaderOffset=0 points to the uncompressed header start.
+        let frame_obu_for_upload = obus.iter().find(|o| {
+            o.obu_type == av1_obu::ObuType::Frame || o.obu_type == av1_obu::ObuType::TileGroup
+                || o.obu_type == av1_obu::ObuType::FrameHeader
+        });
+        let bitstream_data = match frame_obu_for_upload {
+            Some(obu) => &packet_data[obu.data_offset..obu.data_offset + obu.data_size],
+            None => packet_data,
+        };
         let data_size = bitstream_data.len();
         if data_size > self.bitstream_capacity {
             return Err(VulkanDecoderError::DecodeError(format!(
@@ -947,14 +958,10 @@ impl AV1Decoder {
             )));
         }
 
-        let frame_obu = obus.iter().find(|o| {
-            o.obu_type == av1_obu::ObuType::Frame || o.obu_type == av1_obu::ObuType::TileGroup
-                || o.obu_type == av1_obu::ObuType::FrameHeader
-        });
-        // frameHeaderOffset points to the Frame OBU header within the packet
-        let fh_offset_in_buffer = frame_obu.map(|o| o.offset).unwrap_or(0);
-        // tile_offsets points to the tile data within the packet
-        let tile_offset_in_buffer = tile_data_offset_in_packet;
+        // Offsets relative to the OBU payload start (= buffer start)
+        let payload_start = frame_obu_for_upload.map(|o| o.data_offset).unwrap_or(0);
+        let fh_offset_in_buffer = 0usize; // Uncompressed header at buffer byte 0
+        let tile_offset_in_buffer = tile_data_offset_in_packet.saturating_sub(payload_start);
 
         unsafe {
             let ptr = self.device.map_memory(
@@ -1012,12 +1019,39 @@ impl AV1Decoder {
             }
         }
 
-        // Build reference_slots from the fixed-size array (pointers are stable)
+        // Build AV1 DPB slot info for each reference (required by Vulkan spec).
+        // Each reference slot needs VkVideoDecodeAV1DpbSlotInfoKHR in its pNext chain
+        // containing StdVideoDecodeAV1ReferenceInfo with frame type and order hint.
+        let mut ref_std_infos: [vk::native::StdVideoDecodeAV1ReferenceInfo; 8] =
+            unsafe { std::mem::zeroed() };
+        let mut ref_dpb_slot_infos: [vk::VideoDecodeAV1DpbSlotInfoKHR; 8] =
+            std::array::from_fn(|_| vk::VideoDecodeAV1DpbSlotInfoKHR::default());
+
+        for i in 0..num_refs {
+            let dpb = ref_dpb_slots[i] as usize;
+            // Find the VBI slot that maps to this DPB slot
+            let vbi_slot = self.vbi_to_dpb.iter().position(|&d| d == dpb as i32).unwrap_or(0);
+            ref_std_infos[i] = vk::native::StdVideoDecodeAV1ReferenceInfo {
+                flags: unsafe { std::mem::zeroed() },
+                frame_type: self.vbi_frame_type[vbi_slot],
+                RefFrameSignBias: 0,
+                OrderHint: self.vbi_order_hint[vbi_slot],
+                SavedOrderHints: self.vbi_order_hint,
+            };
+            ref_dpb_slot_infos[i] = vk::VideoDecodeAV1DpbSlotInfoKHR {
+                s_type: vk::StructureType::VIDEO_DECODE_AV1_DPB_SLOT_INFO_KHR,
+                p_next: std::ptr::null(),
+                p_std_reference_info: &ref_std_infos[i],
+                _marker: std::marker::PhantomData,
+            };
+        }
+
+        // Build reference_slots with DPB slot info in pNext
         let mut reference_slots: Vec<vk::VideoReferenceSlotInfoKHR> = Vec::with_capacity(num_refs);
         for i in 0..num_refs {
             reference_slots.push(vk::VideoReferenceSlotInfoKHR {
                 s_type: vk::StructureType::VIDEO_REFERENCE_SLOT_INFO_KHR,
-                p_next: std::ptr::null(),
+                p_next: &ref_dpb_slot_infos[i] as *const _ as *const std::ffi::c_void,
                 slot_index: ref_dpb_slots[i],
                 p_picture_resource: &ref_pic_resources[i] as *const _,
                 _marker: std::marker::PhantomData,
@@ -1175,10 +1209,23 @@ impl AV1Decoder {
 
         let setup_pic_resource = dst_pic_resource;
 
-        // Setup slot for the reconstructed picture (stored in DPB for future reference)
+        // Setup slot — also needs VkVideoDecodeAV1DpbSlotInfoKHR in pNext
+        let setup_std_ref_info = vk::native::StdVideoDecodeAV1ReferenceInfo {
+            flags: unsafe { std::mem::zeroed() },
+            frame_type: fh.frame_type as u8,
+            RefFrameSignBias: 0,
+            OrderHint: fh.order_hint,
+            SavedOrderHints: self.vbi_order_hint,
+        };
+        let setup_dpb_slot_info = vk::VideoDecodeAV1DpbSlotInfoKHR {
+            s_type: vk::StructureType::VIDEO_DECODE_AV1_DPB_SLOT_INFO_KHR,
+            p_next: std::ptr::null(),
+            p_std_reference_info: &setup_std_ref_info,
+            _marker: std::marker::PhantomData,
+        };
         let dst_slot_info = vk::VideoReferenceSlotInfoKHR {
             s_type: vk::StructureType::VIDEO_REFERENCE_SLOT_INFO_KHR,
-            p_next: std::ptr::null(),
+            p_next: &setup_dpb_slot_info as *const _ as *const std::ffi::c_void,
             slot_index: dst_slot as i32,
             p_picture_resource: &setup_pic_resource as *const _,
             _marker: std::marker::PhantomData,
@@ -1277,6 +1324,7 @@ impl AV1Decoder {
             if fh.refresh_frame_flags & (1 << i) != 0 {
                 self.vbi_to_dpb[i] = dst_slot as i32;
                 self.vbi_order_hint[i] = fh.order_hint;
+                self.vbi_frame_type[i] = fh.frame_type as u8;
             }
         }
         self.dpb_slot_active[dst_slot] = true;
