@@ -438,15 +438,8 @@ impl App {
             return;
         }
 
-        if self.viewing_video {
-            self.handle_keyboard_video(ctx, space_pressed);
-        } else {
-            self.handle_keyboard_episode(ctx);
-        }
-    }
-
-    fn handle_keyboard_video(&mut self, ctx: &egui::Context, space_pressed: bool) {
-        if space_pressed {
+        // Space toggles play/pause in video mode
+        if space_pressed && self.viewing_video {
             self.playing = !self.playing;
             if self.playing {
                 self.last_frame_time = Some(Instant::now());
@@ -455,51 +448,8 @@ impl App {
             }
         }
 
-        let total_frames = self.player.as_ref().map(|p| p.total_frames).unwrap_or(0);
-        let mut frame_step: Option<isize> = None;
-        let mut frame_jump: Option<usize> = None;
-
-        ctx.input(|i| {
-            if i.key_pressed(egui::Key::ArrowRight) || i.key_pressed(egui::Key::D) {
-                frame_step = Some(1);
-            }
-            if i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::A) {
-                frame_step = Some(-1);
-            }
-            if i.key_pressed(egui::Key::Home) {
-                frame_jump = Some(0);
-            }
-            if i.key_pressed(egui::Key::End) {
-                frame_jump = Some(total_frames.saturating_sub(1));
-            }
-        });
-
-        if let Some(delta) = frame_step {
-            if delta > 0 {
-                // Forward: pull next frame from decoder
-                if let Some(player) = &mut self.player {
-                    if let Some(tex) = player.poll_next_frame() {
-                        self.current_frame = player.current_frame;
-                        self.current_texture = Some(tex);
-                        self.perf.record_display();
-                    }
-                }
-            } else {
-                // Backward: seek to previous frame
-                let new_frame = self.current_frame.saturating_sub(1);
-                if new_frame != self.current_frame {
-                    self.current_frame = new_frame;
-                    if let Some(player) = &mut self.player {
-                        player.seek(new_frame);
-                    }
-                }
-            }
-        } else if let Some(frame) = frame_jump {
-            self.current_frame = frame;
-            if let Some(player) = &mut self.player {
-                player.seek(frame);
-            }
-        }
+        // Arrow keys / A/D ALWAYS navigate episodes (even during video playback)
+        self.handle_keyboard_episode(ctx);
     }
 
     fn handle_keyboard_episode(&mut self, ctx: &egui::Context) {
