@@ -23,6 +23,8 @@ pub struct App {
     current_video_key_index: usize,
     current_texture: Option<egui::TextureHandle>,
     video_paths: Vec<PathBuf>,
+    /// Per-episode seek ranges for v3.0 concatenated videos: (from_s, to_s)
+    seek_ranges: Vec<Option<(f64, f64)>>,
     loading_error: Option<String>,
 
     // Episode cache
@@ -55,6 +57,7 @@ impl App {
             current_video_key_index: 0,
             current_texture: None,
             video_paths: Vec::new(),
+            seek_ranges: Vec::new(),
             loading_error: None,
             episode_cache: None,
             slider_loader: SliderLoader::new(),
@@ -95,12 +98,20 @@ impl App {
                     .unwrap_or(0);
                 self.current_video_key_index = wrist_idx;
 
-                // Build video paths for all episodes
+                // Build video paths and seek ranges for all episodes
                 let video_key = ds.info.video_keys.get(wrist_idx).cloned().unwrap_or_default();
                 self.video_paths = ds
                     .episodes
                     .iter()
                     .map(|ep| ds.video_path(ep.episode_index, &video_key))
+                    .collect();
+                self.seek_ranges = ds
+                    .episodes
+                    .iter()
+                    .map(|ep| {
+                        let (from, to) = ds.episode_time_range(ep.episode_index, &video_key);
+                        if to > from { Some((from, to)) } else { None }
+                    })
                     .collect();
 
                 self.dataset = Some(ds);
@@ -132,7 +143,7 @@ impl App {
             return;
         }
         let mut cache = EpisodeCache::new(ctx, CACHE_COUNT);
-        cache.initialize(self.current_episode, &self.video_paths);
+        cache.initialize(self.current_episode, &self.video_paths, &self.seek_ranges);
         // Set the current texture from the cache (center was decoded synchronously)
         self.current_texture = cache.current_texture_for(self.current_episode);
         if self.current_texture.is_some() {
@@ -196,9 +207,9 @@ impl App {
         // Show episode thumbnail immediately from cache (while video loads)
         if let Some(cache) = &mut self.episode_cache {
             let tex = if delta > 0 {
-                cache.navigate_forward(new_ep, &self.video_paths)
+                cache.navigate_forward(new_ep, &self.video_paths, &self.seek_ranges)
             } else {
-                cache.navigate_backward(new_ep, &self.video_paths)
+                cache.navigate_backward(new_ep, &self.video_paths, &self.seek_ranges)
             };
             if let Some(tex) = tex {
                 self.current_texture = Some(tex);
@@ -226,7 +237,7 @@ impl App {
 
         // Show episode thumbnail from cache while video loads
         if let Some(cache) = &mut self.episode_cache {
-            cache.jump_to(episode, &self.video_paths);
+            cache.jump_to(episode, &self.video_paths, &self.seek_ranges);
             if let Some(tex) = cache.current_texture_for(episode) {
                 self.current_texture = Some(tex);
             }
@@ -319,14 +330,25 @@ impl App {
         let total_frames = ep.length;
         let fps = ds.info.fps;
 
+        // For v3.0 datasets, get the episode's timestamp range within the concatenated video
+        let video_key = ds.info.video_keys.get(self.current_video_key_index)
+            .cloned().unwrap_or_default();
+        let (from_ts, _to_ts) = ds.episode_time_range(self.current_episode, &video_key);
+        let start_frame = if from_ts > 0.0 {
+            (from_ts * fps as f64) as usize
+        } else {
+            0
+        };
+
         log::info!(
-            "Entering video mode: ep {}, {} frames, {}fps",
+            "Entering video mode: ep {}, {} frames, {}fps, start_frame={}",
             self.current_episode,
             total_frames,
-            fps
+            fps,
+            start_frame
         );
 
-        let player = VideoPlayer::new(ctx, &video_path, total_frames, fps, 0);
+        let player = VideoPlayer::new(ctx, &video_path, total_frames, fps, start_frame);
         self.player = Some(player);
         self.current_frame = 0;
         self.viewing_video = true;

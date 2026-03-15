@@ -344,9 +344,10 @@ fn decode_all_frames_inner(
 pub(crate) fn decode_middle_frame_timed(
     video_path: &Path,
     episode_index: usize,
+    seek_range: Option<(f64, f64)>,
 ) -> DecodeResult {
     let start = Instant::now();
-    let image = decode_middle_frame(video_path, None)
+    let image = decode_middle_frame(video_path, seek_range)
         .map_err(|e| {
             log::warn!(
                 "Failed to decode episode {} from {}: {}",
