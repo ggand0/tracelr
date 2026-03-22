@@ -411,13 +411,8 @@ pub(crate) fn decode_all_frames_gpu(
     let is_av1 = codec_id == ffmpeg_next::ffi::AVCodecID::AV_CODEC_ID_AV1;
     log::info!("GPU decode: codec={:?} h264={} av1={} {}x{}", codec_id, is_h264, is_av1, width, height);
 
-    if !is_h264 {
-        // AV1 GPU decode has parser issues with some encodings — use software for now
-        if is_av1 {
-            log::info!("GPU decode: AV1 detected, using software decode (GPU AV1 parser WIP)");
-        } else {
-            log::warn!("GPU decode: unsupported codec, falling back to software");
-        }
+    if !is_h264 && !is_av1 {
+        log::warn!("GPU decode: unsupported codec, falling back to software");
         decode_all_frames_inner(video_path, &tx, &cancel, &ctx, seek_to_frame);
         return;
     }
