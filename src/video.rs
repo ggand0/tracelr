@@ -340,7 +340,8 @@ fn decode_all_frames_inner(
     }
 }
 
-/// Decode frames using GPU hardware decoder (Vulkan Video AV1).
+/// Decode frames using GPU hardware decoder (Vulkan Video via vk-video).
+/// Supports H.264 and AV1 codecs.
 /// Uses ffmpeg for demuxing only — the actual decode happens on the GPU.
 /// Falls back to software decode if GPU init fails.
 pub(crate) fn decode_all_frames_gpu(
@@ -350,7 +351,11 @@ pub(crate) fn decode_all_frames_gpu(
     ctx: egui::Context,
     seek_to_frame: Option<usize>,
 ) {
-    use crate::gpu_decode::{av1_obu, vulkan_decoder};
+    use std::sync::Arc;
+    use vk_video::{
+        EncodedInputChunk, OutputFrame, VulkanInstance,
+        parameters::{DecoderParameters, VulkanAdapterDescriptor, VulkanDeviceDescriptor},
+    };
 
     ensure_ffmpeg_init();
 
@@ -364,101 +369,94 @@ pub(crate) fn decode_all_frames_gpu(
     };
 
     let video_stream_index;
-    let decoder_params;
+    let codec_id;
     let fps;
+    let width;
+    let height;
+    let mut extradata_annexb = Vec::new();
     {
         let stream = match ictx.streams().best(ffmpeg_next::media::Type::Video) {
             Some(s) => s,
             None => return,
         };
         video_stream_index = stream.index();
-        decoder_params = stream.parameters();
+        let params = stream.parameters();
         let rate = stream.rate();
-        fps = if rate.1 > 0 {
-            rate.0 as f64 / rate.1 as f64
-        } else {
-            30.0
-        };
-    }
+        fps = if rate.1 > 0 { rate.0 as f64 / rate.1 as f64 } else { 30.0 };
 
-    // 2. Extract sequence header from codec extradata
-    let codec_ctx =
-        match ffmpeg_next::codec::context::Context::from_parameters(decoder_params) {
+        // Get codec and dimensions
+        let codec_ctx = match ffmpeg_next::codec::context::Context::from_parameters(params) {
             Ok(c) => c,
             Err(e) => {
                 log::error!("GPU decode: failed to create codec context: {}", e);
                 return;
             }
         };
+        codec_id = unsafe { (*codec_ctx.as_ptr()).codec_id };
+        width = unsafe { (*codec_ctx.as_ptr()).width as u32 };
+        height = unsafe { (*codec_ctx.as_ptr()).height as u32 };
 
-    let extradata = unsafe {
-        let ptr = (*codec_ctx.as_ptr()).extradata;
-        let size = (*codec_ctx.as_ptr()).extradata_size as usize;
-        if ptr.is_null() || size < 5 {
-            log::error!("GPU decode: no extradata (need AV1 sequence header)");
-            return;
+        // For H.264 in MP4: extract SPS/PPS from extradata and convert to Annex B
+        unsafe {
+            let ptr = (*codec_ctx.as_ptr()).extradata;
+            let size = (*codec_ctx.as_ptr()).extradata_size as usize;
+            if !ptr.is_null() && size > 0 {
+                let extra = std::slice::from_raw_parts(ptr, size);
+                extradata_annexb = avc_to_annexb_extradata(extra);
+            }
         }
-        std::slice::from_raw_parts(ptr, size)
-    };
+    }
 
-    // Skip 4-byte AV1CodecConfigurationRecord header
-    let obu_data = &extradata[4..];
-    let obus = match av1_obu::parse_obu_headers(obu_data) {
-        Ok(o) => o,
-        Err(e) => {
-            log::error!("GPU decode: failed to parse extradata OBUs: {}", e);
-            return;
-        }
-    };
-    let seq_obu = match obus
-        .iter()
-        .find(|o| o.obu_type == av1_obu::ObuType::SequenceHeader)
-    {
-        Some(o) => o,
-        None => {
-            log::error!("GPU decode: no sequence header in extradata");
-            return;
-        }
-    };
-    let seq = match av1_obu::parse_sequence_header(
-        &obu_data[seq_obu.data_offset..seq_obu.data_offset + seq_obu.data_size],
-    ) {
-        Ok(s) => s,
-        Err(e) => {
-            log::error!("GPU decode: failed to parse sequence header: {}", e);
-            return;
-        }
-    };
+    let is_h264 = codec_id == ffmpeg_next::ffi::AVCodecID::AV_CODEC_ID_H264;
+    if !is_h264 {
+        log::warn!("GPU decode: codec {:?} not supported yet, falling back to software", codec_id);
+        decode_all_frames_inner(video_path, &tx, &cancel, &ctx, seek_to_frame);
+        return;
+    }
 
-    // 3. Create GPU decoder using shared Vulkan device
-    use crate::gpu_decode::wgpu_device;
-    // Use shared device (single VkDevice for graphics + video decode)
-    let decoder_result = if let Some(gpu) = wgpu_device::get_shared_gpu() {
-        vulkan_decoder::AV1Decoder::from_shared(
-            gpu.entry.clone(),
-            gpu.ash_instance.clone(),
-            gpu.ash_device.clone(),
-            gpu.physical_device,
-            gpu.video_queue_family,
-            &seq,
-        )
-    } else {
-        vulkan_decoder::AV1Decoder::new(&seq)
-    };
-    let mut decoder = match decoder_result {
-        Ok(d) => {
-            log::info!("GPU AV1 decoder initialized");
-            d
-        }
+    // 2. Create vk-video H.264 decoder
+    let vulkan_instance = match VulkanInstance::new() {
+        Ok(i) => i,
         Err(e) => {
-            log::warn!("GPU decode unavailable ({}), falling back to software", e);
-            // Fallback to software decode
+            log::warn!("GPU decode: VulkanInstance failed ({}), falling back", e);
+            decode_all_frames_inner(video_path, &tx, &cancel, &ctx, seek_to_frame);
+            return;
+        }
+    };
+    let vulkan_adapter = match vulkan_instance.create_adapter(&VulkanAdapterDescriptor::default()) {
+        Ok(a) => a,
+        Err(e) => {
+            log::warn!("GPU decode: adapter failed ({}), falling back", e);
+            decode_all_frames_inner(video_path, &tx, &cancel, &ctx, seek_to_frame);
+            return;
+        }
+    };
+    let vulkan_device = match vulkan_adapter.create_device(&VulkanDeviceDescriptor::default()) {
+        Ok(d) => d,
+        Err(e) => {
+            log::warn!("GPU decode: device failed ({}), falling back", e);
+            decode_all_frames_inner(video_path, &tx, &cancel, &ctx, seek_to_frame);
+            return;
+        }
+    };
+    let mut decoder = match vulkan_device.create_bytes_decoder(DecoderParameters::default()) {
+        Ok(d) => d,
+        Err(e) => {
+            log::warn!("GPU decode: decoder failed ({}), falling back", e);
             decode_all_frames_inner(video_path, &tx, &cancel, &ctx, seek_to_frame);
             return;
         }
     };
 
-    let (width, height) = decoder.dimensions();
+    log::info!("GPU H.264 decoder initialized ({}x{}, {:.1}fps)", width, height, fps);
+
+    // 3. Feed SPS/PPS from extradata first
+    if !extradata_annexb.is_empty() {
+        let chunk = EncodedInputChunk { data: extradata_annexb.as_slice(), pts: None };
+        if let Err(e) = decoder.decode(chunk) {
+            log::warn!("GPU decode: SPS/PPS feed failed: {}", e);
+        }
+    }
 
     // 4. Optionally seek
     if let Some(target_frame) = seek_to_frame {
@@ -469,66 +467,141 @@ pub(crate) fn decode_all_frames_gpu(
     }
 
     // 5. Demux + GPU decode loop
-    log::info!("GPU decode: starting demux+decode loop for {}", video_path.display());
     let mut frame_count: usize = 0;
     for (stream, packet) in ictx.packets() {
-        if cancel.load(Ordering::Relaxed) {
-            return;
-        }
-        if stream.index() != video_stream_index {
-            continue;
-        }
+        if cancel.load(Ordering::Relaxed) { return; }
+        if stream.index() != video_stream_index { continue; }
 
         let pkt_data = match packet.data() {
             Some(d) => d,
             None => continue,
         };
 
-        match decoder.decode_frame(pkt_data) {
-            Ok(output) => {
-                if frame_count == 0 {
-                    log::info!("GPU decode: first frame decoded, type={:?}", output.frame_type);
-                }
-                if !output.show_frame {
-                    continue;
-                }
+        // Convert AVC (length-prefixed) to Annex B (start-code prefixed)
+        let annexb = avc_to_annexb(pkt_data);
+        let chunk = EncodedInputChunk {
+            data: annexb.as_slice(),
+            pts: packet.pts().map(|p| p as u64),
+        };
 
-                // Readback + NV12→RGBA
-                match decoder.read_back_nv12(output.dpb_slot) {
-                    Ok((y_data, uv_data)) => {
-                        let rgba =
-                            vulkan_decoder::AV1Decoder::nv12_to_rgba(&y_data, &uv_data, width, height);
-                        let image = egui::ColorImage {
-                            size: [width as usize, height as usize],
-                            pixels: rgba
-                                .chunks_exact(4)
-                                .map(|c| {
-                                    egui::Color32::from_rgba_premultiplied(c[0], c[1], c[2], c[3])
-                                })
-                                .collect(),
-                        };
-
-                        if !tx.send_frame(FrameDecodeResult {
-                            frame_index: frame_count,
-                            image: Some(image),
-                        }) {
-                            return;
-                        }
-                        ctx.request_repaint();
-                        frame_count += 1;
+        match decoder.decode(chunk) {
+            Ok(frames) => {
+                for OutputFrame { data: raw, .. } in frames {
+                    let rgba = nv12_to_rgba(&raw.frame, raw.width, raw.height);
+                    let image = egui::ColorImage {
+                        size: [raw.width as usize, raw.height as usize],
+                        pixels: rgba.chunks_exact(4)
+                            .map(|c| egui::Color32::from_rgba_premultiplied(c[0], c[1], c[2], c[3]))
+                            .collect(),
+                    };
+                    if !tx.send_frame(FrameDecodeResult { frame_index: frame_count, image: Some(image) }) {
+                        return;
                     }
-                    Err(e) => {
-                        log::warn!("GPU readback failed at frame {}: {}", frame_count, e);
-                    }
+                    ctx.request_repaint();
+                    frame_count += 1;
                 }
             }
             Err(e) => {
-                log::warn!("GPU decode failed at frame {}: {}", frame_count, e);
-                // Continue — some frames may fail during DPB warmup
+                log::warn!("GPU decode error at frame {}: {}", frame_count, e);
             }
         }
     }
-    log::info!("GPU decode complete: {} frames", frame_count);
+
+    // Flush remaining frames
+    if let Ok(frames) = decoder.flush() {
+        for OutputFrame { data: raw, .. } in frames {
+            let rgba = nv12_to_rgba(&raw.frame, raw.width, raw.height);
+            let image = egui::ColorImage {
+                size: [raw.width as usize, raw.height as usize],
+                pixels: rgba.chunks_exact(4)
+                    .map(|c| egui::Color32::from_rgba_premultiplied(c[0], c[1], c[2], c[3]))
+                    .collect(),
+            };
+            if !tx.send_frame(FrameDecodeResult { frame_index: frame_count, image: Some(image) }) {
+                return;
+            }
+            ctx.request_repaint();
+            frame_count += 1;
+        }
+    }
+
+    log::info!("GPU decode complete: {} frames from {}", frame_count, video_path.display());
+}
+
+/// Convert AVC extradata (SPS/PPS in avcc format) to Annex B format.
+fn avc_to_annexb_extradata(extra: &[u8]) -> Vec<u8> {
+    if extra.len() < 7 { return Vec::new(); }
+    let mut out = Vec::new();
+    let nalu_len_size = ((extra[4] & 0x03) + 1) as usize;
+    let _ = nalu_len_size; // used in avc_to_annexb
+
+    // SPS
+    let num_sps = (extra[5] & 0x1F) as usize;
+    let mut off = 6;
+    for _ in 0..num_sps {
+        if off + 2 > extra.len() { break; }
+        let len = u16::from_be_bytes([extra[off], extra[off+1]]) as usize;
+        off += 2;
+        if off + len > extra.len() { break; }
+        out.extend_from_slice(&[0, 0, 0, 1]);
+        out.extend_from_slice(&extra[off..off+len]);
+        off += len;
+    }
+
+    // PPS
+    if off >= extra.len() { return out; }
+    let num_pps = extra[off] as usize;
+    off += 1;
+    for _ in 0..num_pps {
+        if off + 2 > extra.len() { break; }
+        let len = u16::from_be_bytes([extra[off], extra[off+1]]) as usize;
+        off += 2;
+        if off + len > extra.len() { break; }
+        out.extend_from_slice(&[0, 0, 0, 1]);
+        out.extend_from_slice(&extra[off..off+len]);
+        off += len;
+    }
+
+    out
+}
+
+/// Convert AVC packet (length-prefixed NALUs) to Annex B (start code prefixed).
+fn avc_to_annexb(data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len() + 32);
+    let mut off = 0;
+    while off + 4 <= data.len() {
+        let nalu_len = u32::from_be_bytes([data[off], data[off+1], data[off+2], data[off+3]]) as usize;
+        off += 4;
+        if off + nalu_len > data.len() { break; }
+        out.extend_from_slice(&[0, 0, 0, 1]);
+        out.extend_from_slice(&data[off..off+nalu_len]);
+        off += nalu_len;
+    }
+    out
+}
+
+/// Convert NV12 frame data to RGBA.
+fn nv12_to_rgba(nv12: &[u8], width: u32, height: u32) -> Vec<u8> {
+    let w = width as usize;
+    let h = height as usize;
+    let y_plane = &nv12[..w * h];
+    let uv_plane = &nv12[w * h..];
+    let mut rgba = vec![0u8; w * h * 4];
+    for row in 0..h {
+        for col in 0..w {
+            let y = y_plane[row * w + col] as f32;
+            let uv_row = row / 2;
+            let uv_col = (col / 2) * 2;
+            let u = uv_plane[uv_row * w + uv_col] as f32 - 128.0;
+            let v = uv_plane[uv_row * w + uv_col + 1] as f32 - 128.0;
+            let r = (y + 1.402 * v).clamp(0.0, 255.0) as u8;
+            let g = (y - 0.344 * u - 0.714 * v).clamp(0.0, 255.0) as u8;
+            let b = (y + 1.772 * u).clamp(0.0, 255.0) as u8;
+            let idx = (row * w + col) * 4;
+            rgba[idx] = r; rgba[idx+1] = g; rgba[idx+2] = b; rgba[idx+3] = 255;
+        }
+    }
+    rgba
 }
 
 /// Decode middle frame with timing info, for use in background threads.
