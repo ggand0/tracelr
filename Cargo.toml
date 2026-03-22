@@ -23,7 +23,7 @@ arrow = { version = "55", default-features = false }
 ash = "0.38"
 ash-window = "0.13"
 gpu-allocator = { version = "0.27", features = ["vulkan"] }
-vk-video = { path = "../vk-video-fork/vk-video", default-features = false }
+vk-video = { path = "../vk-video-fork/vk-video", default-features = false, features = ["expose_parsers"] }
 
 [build-dependencies]
 chrono = "0.4"
