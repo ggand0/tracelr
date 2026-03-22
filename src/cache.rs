@@ -53,8 +53,8 @@ impl EpisodeCache {
     }
 
     /// Initialize the cache centered on `center_episode`.
-    /// Synchronously decodes the center episode, spawns background loads for neighbors.
-    pub fn initialize(&mut self, center_episode: usize, video_paths: &[PathBuf]) {
+    /// `seek_ranges[i]` is an optional (from_s, to_s) for v3.0 concatenated videos.
+    pub fn initialize(&mut self, center_episode: usize, video_paths: &[PathBuf], seek_ranges: &[Option<(f64, f64)>]) {
         let num_episodes = video_paths.len();
         if num_episodes == 0 {
             return;
@@ -74,7 +74,8 @@ impl EpisodeCache {
 
         // Synchronously decode the center episode
         let center_slot = center_episode - self.first_episode;
-        if let Some(tex) = Self::decode_sync(&video_paths[center_episode], center_episode, &self.ctx) {
+        let center_seek = seek_ranges.get(center_episode).copied().flatten();
+        if let Some(tex) = Self::decode_sync(&video_paths[center_episode], center_episode, center_seek, &self.ctx) {
             self.slots[center_slot] = Some(tex);
         }
 
@@ -85,7 +86,8 @@ impl EpisodeCache {
             }
             let ep_index = self.first_episode + i;
             if ep_index < num_episodes {
-                self.spawn_load(ep_index, &video_paths[ep_index]);
+                let seek = seek_ranges.get(ep_index).copied().flatten();
+                self.spawn_load(ep_index, &video_paths[ep_index], seek);
             }
         }
     }
@@ -117,6 +119,7 @@ impl EpisodeCache {
         &mut self,
         new_episode: usize,
         video_paths: &[PathBuf],
+        seek_ranges: &[Option<(f64, f64)>],
     ) -> Option<egui::TextureHandle> {
         let num_episodes = video_paths.len();
         let current_slot = new_episode - self.first_episode;
@@ -128,19 +131,19 @@ impl EpisodeCache {
 
             let new_ep_index = self.first_episode + self.cache_size() - 1;
             if new_ep_index < num_episodes {
-                self.spawn_load(new_ep_index, &video_paths[new_ep_index]);
+                let seek = seek_ranges.get(new_ep_index).copied().flatten();
+                self.spawn_load(new_ep_index, &video_paths[new_ep_index], seek);
             }
         }
 
         self.current_texture_for(new_episode)
     }
 
-    /// Shift the cache window for backward navigation.
-    /// Returns the TextureHandle for the new current episode, or None on cache miss.
     pub fn navigate_backward(
         &mut self,
         new_episode: usize,
         video_paths: &[PathBuf],
+        seek_ranges: &[Option<(f64, f64)>],
     ) -> Option<egui::TextureHandle> {
         let current_slot = new_episode - self.first_episode;
 
@@ -149,15 +152,15 @@ impl EpisodeCache {
             self.slots.push_front(None);
             self.first_episode -= 1;
 
-            self.spawn_load(self.first_episode, &video_paths[self.first_episode]);
+            let seek = seek_ranges.get(self.first_episode).copied().flatten();
+            self.spawn_load(self.first_episode, &video_paths[self.first_episode], seek);
         }
 
         self.current_texture_for(new_episode)
     }
 
-    /// Rebuild cache around a new position (slider release, Home/End, click).
-    pub fn jump_to(&mut self, new_episode: usize, video_paths: &[PathBuf]) {
-        self.initialize(new_episode, video_paths);
+    pub fn jump_to(&mut self, new_episode: usize, video_paths: &[PathBuf], seek_ranges: &[Option<(f64, f64)>]) {
+        self.initialize(new_episode, video_paths, seek_ranges);
     }
 
     /// Get the TextureHandle for a given episode index, if cached.
@@ -189,7 +192,7 @@ impl EpisodeCache {
     }
 
     /// Spawn a background thread to decode a mid-episode frame.
-    fn spawn_load(&mut self, episode_index: usize, video_path: &PathBuf) {
+    fn spawn_load(&mut self, episode_index: usize, video_path: &PathBuf, seek_range: Option<(f64, f64)>) {
         if self.in_flight.contains(&episode_index) {
             return;
         }
@@ -200,7 +203,7 @@ impl EpisodeCache {
         let ctx = self.ctx.clone();
 
         std::thread::spawn(move || {
-            let result = video::decode_middle_frame_timed(&path, episode_index);
+            let result = video::decode_middle_frame_timed(&path, episode_index, seek_range);
             let _ = tx.send(result);
             ctx.request_repaint();
         });
@@ -210,9 +213,10 @@ impl EpisodeCache {
     fn decode_sync(
         video_path: &PathBuf,
         episode_index: usize,
+        seek_range: Option<(f64, f64)>,
         ctx: &egui::Context,
     ) -> Option<egui::TextureHandle> {
-        match video::decode_middle_frame(video_path) {
+        match video::decode_middle_frame(video_path, seek_range) {
             Ok(image) => {
                 let name = format!("ep_{:03}_sync", episode_index);
                 Some(ctx.load_texture(name, image, egui::TextureOptions::LINEAR))

@@ -23,6 +23,8 @@ pub struct App {
     current_video_key_index: usize,
     current_texture: Option<egui::TextureHandle>,
     video_paths: Vec<PathBuf>,
+    /// Per-episode seek ranges for v3.0 concatenated videos: (from_s, to_s)
+    seek_ranges: Vec<Option<(f64, f64)>>,
     loading_error: Option<String>,
 
     // Episode cache
@@ -35,6 +37,7 @@ pub struct App {
     viewing_video: bool,
     player: Option<VideoPlayer>,
     current_frame: usize,
+    episode_start_frame: usize, // absolute frame where current episode starts
     playing: bool,
     last_frame_time: Option<Instant>,
     frame_slider_dragging: bool,
@@ -50,11 +53,12 @@ impl App {
     pub fn new(_cc: &eframe::CreationContext, initial_path: Option<PathBuf>) -> Self {
         let mut app = Self {
             dataset: None,
-            annotations: AnnotationState::new_cube_task(),
+            annotations: AnnotationState::load_prompts(initial_path.as_deref()),
             current_episode: 0,
             current_video_key_index: 0,
             current_texture: None,
             video_paths: Vec::new(),
+            seek_ranges: Vec::new(),
             loading_error: None,
             episode_cache: None,
             slider_loader: SliderLoader::new(),
@@ -63,6 +67,7 @@ impl App {
             viewing_video: false,
             player: None,
             current_frame: 0,
+            episode_start_frame: 0,
             playing: false,
             last_frame_time: None,
             frame_slider_dragging: false,
@@ -95,18 +100,29 @@ impl App {
                     .unwrap_or(0);
                 self.current_video_key_index = wrist_idx;
 
-                // Build video paths for all episodes
+                // Build video paths and seek ranges for all episodes
                 let video_key = ds.info.video_keys.get(wrist_idx).cloned().unwrap_or_default();
                 self.video_paths = ds
                     .episodes
                     .iter()
                     .map(|ep| ds.video_path(ep.episode_index, &video_key))
                     .collect();
+                self.seek_ranges = ds
+                    .episodes
+                    .iter()
+                    .map(|ep| {
+                        let (from, to) = ds.episode_time_range(ep.episode_index, &video_key);
+                        if to > from { Some((from, to)) } else { None }
+                    })
+                    .collect();
 
                 self.dataset = Some(ds);
                 self.current_episode = 0;
                 self.current_texture = None;
                 self.loading_error = None;
+
+                // Load prompts config for this dataset
+                self.annotations = AnnotationState::load_prompts(Some(path));
 
                 // Try to load saved annotations
                 let annot_path = path.join("annotations.json");
@@ -129,7 +145,7 @@ impl App {
             return;
         }
         let mut cache = EpisodeCache::new(ctx, CACHE_COUNT);
-        cache.initialize(self.current_episode, &self.video_paths);
+        cache.initialize(self.current_episode, &self.video_paths, &self.seek_ranges);
         // Set the current texture from the cache (center was decoded synchronously)
         self.current_texture = cache.current_texture_for(self.current_episode);
         if self.current_texture.is_some() {
@@ -142,8 +158,9 @@ impl App {
     #[allow(dead_code)]
     fn load_current_frame_sync(&mut self, ctx: &egui::Context) {
         if let Some(path) = self.video_paths.get(self.current_episode) {
+            let seek_range = self.episode_seek_range();
             let start = std::time::Instant::now();
-            match video::decode_middle_frame(path) {
+            match video::decode_middle_frame(path, seek_range) {
                 Ok(image) => {
                     let decode_ms = start.elapsed().as_secs_f64() * 1000.0;
                     log::debug!(
@@ -192,9 +209,9 @@ impl App {
         // Show episode thumbnail immediately from cache (while video loads)
         if let Some(cache) = &mut self.episode_cache {
             let tex = if delta > 0 {
-                cache.navigate_forward(new_ep, &self.video_paths)
+                cache.navigate_forward(new_ep, &self.video_paths, &self.seek_ranges)
             } else {
-                cache.navigate_backward(new_ep, &self.video_paths)
+                cache.navigate_backward(new_ep, &self.video_paths, &self.seek_ranges)
             };
             if let Some(tex) = tex {
                 self.current_texture = Some(tex);
@@ -222,7 +239,7 @@ impl App {
 
         // Show episode thumbnail from cache while video loads
         if let Some(cache) = &mut self.episode_cache {
-            cache.jump_to(episode, &self.video_paths);
+            cache.jump_to(episode, &self.video_paths, &self.seek_ranges);
             if let Some(tex) = cache.current_texture_for(episode) {
                 self.current_texture = Some(tex);
             }
@@ -273,7 +290,12 @@ impl App {
 
         // Sync decode and insert into LRU
         if let Some(path) = self.video_paths.get(episode) {
-            match video::decode_middle_frame(path) {
+            let seek_range = self.dataset.as_ref().and_then(|ds| {
+                let vk = ds.info.video_keys.get(self.current_video_key_index)?;
+                let (from, to) = ds.episode_time_range(episode, vk);
+                if to > from { Some((from, to)) } else { None }
+            });
+            match video::decode_middle_frame(path, seek_range) {
                 Ok(image) => {
                     let name = format!("ep_{:03}_slider", episode);
                     self.current_texture = Some(ctx.load_texture(
@@ -310,16 +332,31 @@ impl App {
         let total_frames = ep.length;
         let fps = ds.info.fps;
 
+        // For v3.0 datasets, get the episode's timestamp range within the concatenated video
+        let video_key = ds.info.video_keys.get(self.current_video_key_index)
+            .cloned().unwrap_or_default();
+        let (from_ts, _to_ts) = ds.episode_time_range(self.current_episode, &video_key);
+        let start_frame = if from_ts > 0.0 {
+            (from_ts * fps as f64) as usize
+        } else {
+            0
+        };
+
         log::info!(
-            "Entering video mode: ep {}, {} frames, {}fps",
+            "Entering video mode: ep {}, {} frames, {}fps, start_frame={}",
             self.current_episode,
             total_frames,
-            fps
+            fps,
+            start_frame
         );
 
-        let player = VideoPlayer::new(ctx, &video_path, total_frames, fps, 0);
+        // total_frames for the player = start_frame + episode length
+        // so the player knows when the episode ends within the concatenated video
+        let player_total = start_frame + total_frames;
+        let player = VideoPlayer::new(ctx, &video_path, player_total, fps, start_frame);
         self.player = Some(player);
-        self.current_frame = 0;
+        self.current_frame = start_frame;
+        self.episode_start_frame = start_frame;
         self.viewing_video = true;
         self.playing = true;
         self.last_frame_time = None;
@@ -396,14 +433,19 @@ impl App {
             escape_pressed = i.key_pressed(egui::Key::Escape);
             space_pressed = i.key_pressed(egui::Key::Space);
 
-            // Annotation shortcuts (1-4) — work in both modes
+            // Annotation shortcuts (1-9) — work in both modes
             for (key, idx) in [
                 (egui::Key::Num1, 0),
                 (egui::Key::Num2, 1),
                 (egui::Key::Num3, 2),
                 (egui::Key::Num4, 3),
+                (egui::Key::Num5, 4),
+                (egui::Key::Num6, 5),
+                (egui::Key::Num7, 6),
+                (egui::Key::Num8, 7),
+                (egui::Key::Num9, 8),
             ] {
-                if i.key_pressed(key) {
+                if i.key_pressed(key) && idx < self.annotations.prompts.len() {
                     self.annotations.set(self.current_episode, idx);
                 }
             }
@@ -424,15 +466,8 @@ impl App {
             return;
         }
 
-        if self.viewing_video {
-            self.handle_keyboard_video(ctx, space_pressed);
-        } else {
-            self.handle_keyboard_episode(ctx);
-        }
-    }
-
-    fn handle_keyboard_video(&mut self, ctx: &egui::Context, space_pressed: bool) {
-        if space_pressed {
+        // Space toggles play/pause in video mode
+        if space_pressed && self.viewing_video {
             self.playing = !self.playing;
             if self.playing {
                 self.last_frame_time = Some(Instant::now());
@@ -441,51 +476,8 @@ impl App {
             }
         }
 
-        let total_frames = self.player.as_ref().map(|p| p.total_frames).unwrap_or(0);
-        let mut frame_step: Option<isize> = None;
-        let mut frame_jump: Option<usize> = None;
-
-        ctx.input(|i| {
-            if i.key_pressed(egui::Key::ArrowRight) || i.key_pressed(egui::Key::D) {
-                frame_step = Some(1);
-            }
-            if i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::A) {
-                frame_step = Some(-1);
-            }
-            if i.key_pressed(egui::Key::Home) {
-                frame_jump = Some(0);
-            }
-            if i.key_pressed(egui::Key::End) {
-                frame_jump = Some(total_frames.saturating_sub(1));
-            }
-        });
-
-        if let Some(delta) = frame_step {
-            if delta > 0 {
-                // Forward: pull next frame from decoder
-                if let Some(player) = &mut self.player {
-                    if let Some(tex) = player.poll_next_frame() {
-                        self.current_frame = player.current_frame;
-                        self.current_texture = Some(tex);
-                        self.perf.record_display();
-                    }
-                }
-            } else {
-                // Backward: seek to previous frame
-                let new_frame = self.current_frame.saturating_sub(1);
-                if new_frame != self.current_frame {
-                    self.current_frame = new_frame;
-                    if let Some(player) = &mut self.player {
-                        player.seek(new_frame);
-                    }
-                }
-            }
-        } else if let Some(frame) = frame_jump {
-            self.current_frame = frame;
-            if let Some(player) = &mut self.player {
-                player.seek(frame);
-            }
-        }
+        // Arrow keys / A/D ALWAYS navigate episodes (even during video playback)
+        self.handle_keyboard_episode(ctx);
     }
 
     fn handle_keyboard_episode(&mut self, ctx: &egui::Context) {
@@ -590,6 +582,13 @@ impl App {
             "lerobot-explorer".to_string()
         };
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+    }
+
+    fn episode_seek_range(&self) -> Option<(f64, f64)> {
+        let ds = self.dataset.as_ref()?;
+        let vk = ds.info.video_keys.get(self.current_video_key_index)?;
+        let (from, to) = ds.episode_time_range(self.current_episode, vk);
+        if to > from { Some((from, to)) } else { None }
     }
 
     fn annotation_json_path(&self) -> Option<String> {
@@ -997,12 +996,15 @@ impl App {
     // -- Video mode UI --
 
     fn show_frame_slider(&mut self, _ctx: &egui::Context, ui: &mut egui::Ui) {
-        let total_frames = self.player.as_ref().map(|p| p.total_frames).unwrap_or(0);
-        if total_frames <= 1 {
+        let ep_length = self.dataset.as_ref()
+            .and_then(|ds| ds.episodes.get(self.current_episode))
+            .map(|ep| ep.length)
+            .unwrap_or(0);
+        if ep_length <= 1 {
             return;
         }
 
-        let max = total_frames - 1;
+        let max = ep_length - 1;
         let accent = self.theme.accent;
 
         let slider_width = ui.available_width();
@@ -1017,27 +1019,29 @@ impl App {
         let cy = rect.center().y;
         let handle_range = (rect.left() + handle_radius)..=(rect.right() - handle_radius);
 
-        let mut idx = self.current_frame;
+        // Episode-relative frame position
+        let ep_frame = self.current_frame.saturating_sub(self.episode_start_frame);
+        let mut idx = ep_frame;
 
         if let Some(pos) = response.interact_pointer_pos() {
             let usable = rect.x_range().shrink(handle_radius);
             let drag_t = ((pos.x - usable.min) / (usable.max - usable.min)).clamp(0.0, 1.0);
-            let new_idx = (max as f32 * drag_t).round() as usize;
+            let new_ep_frame = (max as f32 * drag_t).round() as usize;
 
             if !self.frame_slider_dragging {
                 self.frame_slider_dragging = true;
-                self.playing = false; // Pause on slider grab
+                self.playing = false;
             }
 
-            if new_idx != self.current_frame {
-                self.current_frame = new_idx;
+            let new_abs_frame = self.episode_start_frame + new_ep_frame;
+            if new_abs_frame != self.current_frame {
+                self.current_frame = new_abs_frame;
             }
-            idx = self.current_frame;
+            idx = new_ep_frame;
         }
 
         if response.drag_stopped() && self.frame_slider_dragging {
             self.frame_slider_dragging = false;
-            // Seek decoder to new position
             if let Some(player) = &mut self.player {
                 player.seek(self.current_frame);
             }
@@ -1048,7 +1052,7 @@ impl App {
             egui::pos2(rect.left(), cy - rail_radius),
             egui::pos2(rect.right(), cy + rail_radius),
         );
-        let t = idx as f32 / max as f32;
+        let t = if max > 0 { idx as f32 / max as f32 } else { 0.0 };
         let handle_x = egui::lerp(handle_range, t);
 
         ui.painter()
@@ -1063,26 +1067,44 @@ impl App {
         );
     }
 
-    fn show_frame_footer(&self, ui: &mut egui::Ui) {
+    fn show_frame_footer(&mut self, ui: &mut egui::Ui) {
         let font = egui::FontId::monospace(13.0);
         let bright = egui::Color32::from_gray(200);
         let dim = egui::Color32::from_gray(160);
 
-        let total_frames = self.player.as_ref().map(|p| p.total_frames).unwrap_or(0);
+        let ep_length = self.dataset.as_ref()
+            .and_then(|ds| ds.episodes.get(self.current_episode))
+            .map(|ep| ep.length)
+            .unwrap_or(0);
         let fps = self.player.as_ref().map(|p| p.fps).unwrap_or(30);
+        let ep_frame = self.current_frame.saturating_sub(self.episode_start_frame);
 
         ui.horizontal(|ui| {
-            // Play state
+            // Clickable play/pause button
             let play_icon = if self.playing { "\u{23f8}" } else { "\u{25b6}" };
+            let btn = ui.button(
+                egui::RichText::new(play_icon)
+                    .font(font.clone())
+                    .color(bright),
+            );
+            if btn.clicked() {
+                self.playing = !self.playing;
+                if self.playing {
+                    self.last_frame_time = Some(Instant::now());
+                } else {
+                    self.last_frame_time = None;
+                }
+            }
+
             ui.label(
-                egui::RichText::new(format!("{} ep {:03}", play_icon, self.current_episode))
+                egui::RichText::new(format!("ep {:03}", self.current_episode))
                     .font(font.clone())
                     .color(bright),
             );
 
-            // Timecode
-            let time_s = self.current_frame as f64 / fps as f64;
-            let total_s = total_frames as f64 / fps as f64;
+            // Timecode (episode-relative)
+            let time_s = ep_frame as f64 / fps as f64;
+            let total_s = ep_length as f64 / fps as f64;
             ui.separator();
             ui.label(
                 egui::RichText::new(format!("{:.1}s / {:.1}s", time_s, total_s))
@@ -1090,13 +1112,13 @@ impl App {
                     .color(dim),
             );
 
-            // Right-aligned: frame index
+            // Right-aligned: frame index (episode-relative)
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(
                     egui::RichText::new(format!(
                         "frame {} / {}",
-                        self.current_frame + 1,
-                        total_frames
+                        ep_frame + 1,
+                        ep_length
                     ))
                     .font(font.clone())
                     .color(bright),
