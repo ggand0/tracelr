@@ -600,6 +600,7 @@ fn gpu_decode_av1(
 
     let mut ref_ctx = AV1ReferenceContext::new();
     let mut frame_count: usize = 0;
+    let decode_start = std::time::Instant::now();
 
     // Stream packets directly — no buffering
     for (stream, packet) in ictx.packets() {
@@ -627,6 +628,9 @@ fn gpu_decode_av1(
                                         .map(|c| egui::Color32::from_rgba_premultiplied(c[0], c[1], c[2], c[3]))
                                         .collect(),
                                 };
+                                if frame_count < 5 || frame_count % 100 == 0 {
+                                    log::debug!("GPU AV1: sending frame {}", frame_count);
+                                }
                                 if !tx.send_frame(FrameDecodeResult { frame_index: frame_count, image: Some(image) }) { return; }
                                 ctx.request_repaint();
                                 frame_count += 1;
@@ -647,7 +651,9 @@ fn gpu_decode_av1(
             }
         }
     }
-    log::info!("GPU AV1 decode complete: {} frames from {}", frame_count, video_path.display());
+    let elapsed = decode_start.elapsed();
+    log::info!("GPU AV1 decode complete: {} frames in {:.1}s ({:.1} fps) from {}",
+        frame_count, elapsed.as_secs_f64(), frame_count as f64 / elapsed.as_secs_f64(), video_path.display());
 }
 
 /// Convert AVC extradata (SPS/PPS in avcc format) to Annex B format.
