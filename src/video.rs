@@ -551,52 +551,43 @@ fn gpu_decode_av1(
     use vk_video::parser::av1::decoder_instructions::compile_temporal_unit;
     use vk_video::parser::av1::reference_manager::AV1ReferenceContext;
 
-    // Parse sequence header from av1C extradata (skip 4-byte config header)
-    log::info!("GPU AV1: extradata len={}", extradata_raw.len());
+    // Parse sequence header — try extradata first, then first packet inline
     let obu_data = if extradata_raw.len() > 4 { &extradata_raw[4..] } else { extradata_raw };
-    let seq = match av1_obu::parse_obu_headers(obu_data)
+    let mut seq_opt = av1_obu::parse_obu_headers(obu_data)
         .ok()
         .and_then(|obus| obus.iter().find(|o| o.obu_type == av1_obu::ObuType::SequenceHeader).cloned())
-        .and_then(|seq_obu| av1_obu::parse_sequence_header(&obu_data[seq_obu.data_offset..seq_obu.data_offset + seq_obu.data_size]).ok())
-    {
-        Some(s) => s,
-        None => {
-            // Try parsing first packet for sequence header
-            log::warn!("GPU AV1: no SH in extradata, will try first packet");
-            // Fall back: get SH from first packet
-            let mut seq_from_pkt = None;
-            for (stream, packet) in ictx.packets() {
+        .and_then(|seq_obu| av1_obu::parse_sequence_header(&obu_data[seq_obu.data_offset..seq_obu.data_offset + seq_obu.data_size]).ok());
+
+    // If no SH in extradata, peek at the first packet to find it
+    if seq_opt.is_none() {
+        // Peek first packet without consuming the iterator — re-open the file
+        if let Ok(mut peek_ctx) = ffmpeg_next::format::input(video_path) {
+            for (stream, packet) in peek_ctx.packets() {
                 if stream.index() != video_stream_index { continue; }
                 if let Some(d) = packet.data() {
                     if let Ok(obus) = av1_obu::parse_obu_headers(d) {
                         for obu in &obus {
                             if obu.obu_type == av1_obu::ObuType::SequenceHeader {
-                                if let Ok(s) = av1_obu::parse_sequence_header(&d[obu.data_offset..obu.data_offset + obu.data_size]) {
-                                    seq_from_pkt = Some(s);
-                                    break;
-                                }
+                                seq_opt = av1_obu::parse_sequence_header(&d[obu.data_offset..obu.data_offset + obu.data_size]).ok();
+                                break;
                             }
                         }
                     }
-                    break;
                 }
+                break;
             }
-            match seq_from_pkt {
-                Some(s) => {
-                    // Re-seek to beginning
-                    let _ = ictx.seek(0, ..0);
-                    s
-                }
-                None => {
-                    log::error!("GPU AV1: cannot find sequence header, falling back");
-                    decode_all_frames_inner(video_path, tx, cancel, ctx, None);
-                    return;
-                }
-            }
+        }
+    }
+
+    let seq = match seq_opt {
+        Some(s) => s,
+        None => {
+            log::error!("GPU AV1: cannot find sequence header, falling back");
+            decode_all_frames_inner(video_path, tx, cancel, ctx, None);
+            return;
         }
     };
 
-    log::info!("GPU AV1: sequence header parsed, {}x{}", seq.max_frame_width_minus_1 + 1, seq.max_frame_height_minus_1 + 1);
     let mut decoder = match AV1VulkanDecoder::new(vulkan_device.clone(), &seq) {
         Ok(d) => d,
         Err(e) => {
@@ -605,11 +596,12 @@ fn gpu_decode_av1(
             return;
         }
     };
-    log::info!("GPU AV1 decoder initialized ({}x{})", width, height);
+    log::info!("GPU AV1 decoder initialized: {}x{}", width, height);
 
     let mut ref_ctx = AV1ReferenceContext::new();
     let mut frame_count: usize = 0;
 
+    // Stream packets directly — no buffering
     for (stream, packet) in ictx.packets() {
         if cancel.load(Ordering::Relaxed) { return; }
         if stream.index() != video_stream_index { continue; }
@@ -639,8 +631,12 @@ fn gpu_decode_av1(
                                 ctx.request_repaint();
                                 frame_count += 1;
                             }
-                            Ok(None) => {} // show_frame=false, decoded but not displayed
-                            Err(e) => { log::warn!("GPU AV1 decode error: {}", e); }
+                            Ok(None) => {
+                                // show_frame=false — decoded but not displayed, don't increment
+                            }
+                            Err(e) => {
+                                log::warn!("GPU AV1 decode error at frame {}: {}", frame_count, e);
+                            }
                         }
                     }
                     AV1DecoderInstruction::Drop { reference_ids } => {
