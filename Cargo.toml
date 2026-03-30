@@ -5,7 +5,7 @@ edition = "2021"
 description = "LeRobot dataset annotation and exploration tool"
 
 [dependencies]
-eframe = "0.31"
+eframe = { version = "0.31", default-features = false, features = ["default_fonts", "wgpu", "x11", "wayland"] }
 egui = "0.31"
 ffmpeg-next = { version = "7", default-features = false, features = ["format", "software-scaling"] }
 serde = { version = "1", features = ["derive"] }
