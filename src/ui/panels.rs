@@ -175,15 +175,13 @@ impl App {
                     ui.selectable_label(is_selected, &label_text)
                 });
 
-                // Auto-scroll: bring both first and last selected into view
-                if self.scroll_to_selected {
-                    if scroll_last == Some(episode_index) {
-                        response.response.scroll_to_me(None);
-                    }
-                    if scroll_first == Some(episode_index) {
-                        response.response.scroll_to_me(None);
-                        self.scroll_to_selected = false;
-                    }
+                // Two-frame auto-scroll: last item first, then first item
+                if self.scroll_to_selected == 2 && scroll_last == Some(episode_index) {
+                    response.response.scroll_to_me(None);
+                    self.scroll_to_selected = 1;
+                } else if self.scroll_to_selected == 1 && scroll_first == Some(episode_index) {
+                    response.response.scroll_to_me(None);
+                    self.scroll_to_selected = 0;
                 }
 
                 if response.inner.clicked() {
