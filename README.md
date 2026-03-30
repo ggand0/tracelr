@@ -31,12 +31,32 @@ Both formats are auto-detected from `meta/info.json`.
 
 ### Prerequisites
 
-- Rust toolchain (rustup)
-- FFmpeg development libraries:
+- Rust toolchain ([rustup](https://rustup.rs/))
+- FFmpeg development libraries and pkg-config:
+
+  **macOS (Homebrew)**
   ```
-  # Ubuntu/Debian
-  sudo apt install libavcodec-dev libavformat-dev libswscale-dev libavutil-dev
+  brew install pkgconf ffmpeg
   ```
+
+  **Ubuntu/Debian**
+  ```
+  sudo apt install pkg-config libavcodec-dev libavformat-dev libswscale-dev libavutil-dev
+  ```
+
+  **Fedora/RHEL**
+  ```
+  sudo dnf install pkgconf-pkg-config ffmpeg-free-devel
+  ```
+
+  **Windows**
+
+  Download an FFmpeg "shared" build from [ffmpeg.org/download](https://ffmpeg.org/download.html#build-windows), extract it, and set the `FFMPEG_DIR` environment variable to the extracted folder:
+  ```
+  set FFMPEG_DIR=C:\path\to\ffmpeg
+  cargo build --profile opt-dev
+  ```
+  Ensure the FFmpeg `bin` directory is on your `PATH` at runtime so the DLLs are found.
 
 ### Build
 
