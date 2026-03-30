@@ -299,7 +299,7 @@ impl App {
     /// Resize grid by delta steps. Grid sizes cycle through: 1x1, 2x2, 3x3, 4x4.
     pub(crate) fn grid_resize(&mut self, delta: isize, ctx: &egui::Context) {
         let current = self.grid_cols as isize;
-        let new_size = (current + delta).clamp(1, 6) as usize;
+        let new_size = (current + delta).clamp(1, 10) as usize;
         if new_size == self.grid_cols {
             return;
         }

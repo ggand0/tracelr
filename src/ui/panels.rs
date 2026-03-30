@@ -670,9 +670,9 @@ fn grid_size_picker(
     current_rows: usize,
     accent: egui::Color32,
 ) -> Option<(usize, usize)> {
-    let max_cols = 6;
-    let max_rows = 6;
-    let cell_size = 14.0;
+    let max_cols = 10;
+    let max_rows = 10;
+    let cell_size = 10.0;
     let cell_gap = 3.0;
     let total_w = max_cols as f32 * (cell_size + cell_gap) - cell_gap;
     let total_h = max_rows as f32 * (cell_size + cell_gap) - cell_gap;
