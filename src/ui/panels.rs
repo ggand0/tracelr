@@ -170,9 +170,10 @@ impl App {
                     ui.selectable_label(is_selected, &label_text)
                 });
 
-                // Auto-scroll to keep the first selected episode visible
-                if scroll_target == Some(episode_index) {
+                // Auto-scroll only when navigation just changed the selection
+                if self.scroll_to_selected && scroll_target == Some(episode_index) {
                     response.response.scroll_to_me(Some(egui::Align::Center));
+                    self.scroll_to_selected = false;
                 }
 
                 if response.inner.clicked() {

@@ -73,6 +73,7 @@ impl App {
         }
 
         self.current_episode = new_ep;
+        self.scroll_to_selected = true;
 
         // Show episode thumbnail immediately from cache (while video loads)
         if let Some(cache) = &mut self.episode_cache {
@@ -103,6 +104,7 @@ impl App {
         }
 
         self.current_episode = episode;
+        self.scroll_to_selected = true;
 
         if let Some(cache) = &mut self.episode_cache {
             cache.jump_to(episode, &self.video_paths, &self.seek_ranges);
@@ -329,5 +331,6 @@ impl App {
             grid.jump_to(episode, ctx, &self.video_paths, &self.seek_ranges, &ds.episodes);
         }
         self.current_episode = episode;
+        self.scroll_to_selected = true;
     }
 }
