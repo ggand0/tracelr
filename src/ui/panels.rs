@@ -714,7 +714,7 @@ fn grid_size_picker(
     // Reserve space for the label
     ui.allocate_exact_size(egui::vec2(total_w, 14.0), egui::Sense::hover());
 
-    if response.clicked() && (hover_col != current_cols || hover_row != current_rows) {
+    if response.clicked() {
         Some((hover_col, hover_row))
     } else {
         None
