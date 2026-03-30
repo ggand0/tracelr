@@ -5,6 +5,14 @@ use eframe::egui;
 
 use crate::cache::VideoPlayer;
 
+/// Dataset context needed to create grid panes.
+pub(crate) struct GridDataset<'a> {
+    pub video_paths: &'a [PathBuf],
+    pub seek_ranges: &'a [Option<(f64, f64)>],
+    pub episodes: &'a [crate::dataset::EpisodeMeta],
+    pub fps: u32,
+}
+
 /// A single pane in the grid, displaying one episode's video.
 struct GridPane {
     episode_index: usize,
@@ -37,20 +45,17 @@ impl GridView {
         cols: usize,
         rows: usize,
         start_episode: usize,
-        video_paths: &[PathBuf],
-        seek_ranges: &[Option<(f64, f64)>],
-        episodes: &[crate::dataset::EpisodeMeta],
-        fps: u32,
+        ds: &GridDataset,
     ) -> Self {
         let total_panes = cols * rows;
         let mut panes = Vec::with_capacity(total_panes);
 
         for i in 0..total_panes {
             let ep_idx = start_episode + i;
-            if ep_idx >= video_paths.len() {
+            if ep_idx >= ds.video_paths.len() {
                 break;
             }
-            if let Some(pane) = Self::create_pane(ctx, ep_idx, video_paths, seek_ranges, episodes, fps) {
+            if let Some(pane) = Self::create_pane(ctx, ep_idx, ds) {
                 panes.push(pane);
             }
         }
@@ -62,7 +67,7 @@ impl GridView {
             start_episode,
             playing: true,
             last_frame_time: None,
-            fps,
+            fps: ds.fps,
             selected_pane: None,
         }
     }
@@ -70,27 +75,24 @@ impl GridView {
     fn create_pane(
         ctx: &egui::Context,
         ep_idx: usize,
-        video_paths: &[PathBuf],
-        seek_ranges: &[Option<(f64, f64)>],
-        episodes: &[crate::dataset::EpisodeMeta],
-        fps: u32,
+        ds: &GridDataset,
     ) -> Option<GridPane> {
-        let video_path = video_paths.get(ep_idx)?;
-        let ep = episodes.get(ep_idx)?;
+        let video_path = ds.video_paths.get(ep_idx)?;
+        let ep = ds.episodes.get(ep_idx)?;
         let total_frames = ep.length;
 
-        let from_ts = seek_ranges.get(ep_idx)
+        let from_ts = ds.seek_ranges.get(ep_idx)
             .and_then(|r| r.as_ref())
             .map(|(from, _)| *from)
             .unwrap_or(0.0);
         let start_frame = if from_ts > 0.0 {
-            (from_ts * fps as f64) as usize
+            (from_ts * ds.fps as f64) as usize
         } else {
             0
         };
 
         let player_total = start_frame + total_frames;
-        let player = VideoPlayer::new(ctx, video_path, player_total, fps, start_frame);
+        let player = VideoPlayer::new(ctx, video_path, player_total, ds.fps, start_frame);
 
         Some(GridPane {
             episode_index: ep_idx,
@@ -169,107 +171,59 @@ impl GridView {
         }
     }
 
+    /// Rebuild all panes from `self.start_episode` using current cols/rows.
+    fn rebuild(&mut self, ctx: &egui::Context, ds: &GridDataset) {
+        self.panes.clear();
+        self.selected_pane = None;
+
+        let total = ds.video_paths.len();
+        for i in 0..(self.cols * self.rows) {
+            let ep_idx = self.start_episode + i;
+            if ep_idx >= total {
+                break;
+            }
+            if let Some(pane) = Self::create_pane(ctx, ep_idx, ds) {
+                self.panes.push(pane);
+            }
+        }
+
+        self.playing = true;
+        self.last_frame_time = None;
+    }
+
     /// Shift the grid forward or backward by `cols * rows` episodes.
-    pub fn navigate_page(
-        &mut self,
-        delta: isize,
-        ctx: &egui::Context,
-        video_paths: &[PathBuf],
-        seek_ranges: &[Option<(f64, f64)>],
-        episodes: &[crate::dataset::EpisodeMeta],
-    ) {
+    pub fn navigate_page(&mut self, delta: isize, ctx: &egui::Context, ds: &GridDataset) {
         let page_size = self.cols * self.rows;
-        let total = video_paths.len();
+        let total = ds.video_paths.len();
         if total == 0 {
             return;
         }
 
         let new_start = if delta > 0 {
             let s = self.start_episode + page_size;
-            if s >= total { return; } // already at end
+            if s >= total { return; }
             s
         } else {
             if self.start_episode == 0 { return; }
             self.start_episode.saturating_sub(page_size)
         };
 
-        // Drop old panes (cancels decode threads via Drop)
-        self.panes.clear();
         self.start_episode = new_start;
-        self.selected_pane = None;
-
-        for i in 0..(self.cols * self.rows) {
-            let ep_idx = new_start + i;
-            if ep_idx >= total {
-                break;
-            }
-            if let Some(pane) = Self::create_pane(ctx, ep_idx, video_paths, seek_ranges, episodes, self.fps) {
-                self.panes.push(pane);
-            }
-        }
-
-        self.playing = true;
-        self.last_frame_time = None;
+        self.rebuild(ctx, ds);
     }
 
     /// Jump to a specific start episode, rebuilding all panes.
-    pub fn jump_to(
-        &mut self,
-        start: usize,
-        ctx: &egui::Context,
-        video_paths: &[PathBuf],
-        seek_ranges: &[Option<(f64, f64)>],
-        episodes: &[crate::dataset::EpisodeMeta],
-    ) {
-        let total = video_paths.len();
-        let start = start.min(total.saturating_sub(1));
-
-        self.panes.clear();
-        self.start_episode = start;
-        self.selected_pane = None;
-
-        for i in 0..(self.cols * self.rows) {
-            let ep_idx = start + i;
-            if ep_idx >= total {
-                break;
-            }
-            if let Some(pane) = Self::create_pane(ctx, ep_idx, video_paths, seek_ranges, episodes, self.fps) {
-                self.panes.push(pane);
-            }
-        }
-
-        self.playing = true;
-        self.last_frame_time = None;
+    pub fn jump_to(&mut self, start: usize, ctx: &egui::Context, ds: &GridDataset) {
+        let total = ds.video_paths.len();
+        self.start_episode = start.min(total.saturating_sub(1));
+        self.rebuild(ctx, ds);
     }
 
     /// Resize the grid (change cols/rows) and rebuild panes from current start_episode.
-    pub fn resize(
-        &mut self,
-        cols: usize,
-        rows: usize,
-        ctx: &egui::Context,
-        video_paths: &[PathBuf],
-        seek_ranges: &[Option<(f64, f64)>],
-        episodes: &[crate::dataset::EpisodeMeta],
-    ) {
-        self.panes.clear();
+    pub fn resize(&mut self, cols: usize, rows: usize, ctx: &egui::Context, ds: &GridDataset) {
         self.cols = cols;
         self.rows = rows;
-        self.selected_pane = None;
-
-        let total = video_paths.len();
-        for i in 0..(cols * rows) {
-            let ep_idx = self.start_episode + i;
-            if ep_idx >= total {
-                break;
-            }
-            if let Some(pane) = Self::create_pane(ctx, ep_idx, video_paths, seek_ranges, episodes, self.fps) {
-                self.panes.push(pane);
-            }
-        }
-
-        self.playing = true;
-        self.last_frame_time = None;
+        self.rebuild(ctx, ds);
     }
 
     /// Render the grid into the given UI area.
@@ -354,6 +308,7 @@ impl GridView {
     }
 
     /// Get the episode index of the selected pane.
+    #[allow(dead_code)]
     pub fn selected_episode(&self) -> Option<usize> {
         self.selected_pane.and_then(|idx| self.panes.get(idx).map(|p| p.episode_index))
     }

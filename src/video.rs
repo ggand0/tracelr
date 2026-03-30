@@ -76,7 +76,7 @@ pub(crate) fn decode_middle_frame(
             continue;
         }
         decoder.send_packet(&packet)?;
-        while decoder.receive_frame(&mut decoded).is_ok() {
+        if decoder.receive_frame(&mut decoded).is_ok() {
             return frame_to_color_image(&decoded);
         }
     }
@@ -120,7 +120,7 @@ pub(crate) fn decode_first_frame(
             continue;
         }
         decoder.send_packet(&packet)?;
-        while decoder.receive_frame(&mut decoded).is_ok() {
+        if decoder.receive_frame(&mut decoded).is_ok() {
             return frame_to_color_image(&decoded);
         }
     }

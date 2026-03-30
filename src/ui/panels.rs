@@ -59,17 +59,18 @@ impl App {
                         self.grid_cols = cols;
                         self.grid_rows = rows;
                         if !in_grid {
-                            // Enter grid mode with the selected size
                             self.toggle_grid_view(ctx);
                         }
-                        if let (Some(grid), Some(ds)) = (&mut self.grid_view, &self.dataset) {
-                            grid.resize(
-                                cols, rows,
-                                ctx,
-                                &self.video_paths,
-                                &self.seek_ranges,
-                                &ds.episodes,
-                            );
+                        if let Some(ds) = &self.dataset {
+                            let gds = crate::grid::GridDataset {
+                                video_paths: &self.video_paths,
+                                seek_ranges: &self.seek_ranges,
+                                episodes: &ds.episodes,
+                                fps: ds.info.fps,
+                            };
+                            if let Some(grid) = &mut self.grid_view {
+                                grid.resize(cols, rows, ctx, &gds);
+                            }
                         }
                     }
                     ui.separator();

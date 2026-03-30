@@ -192,9 +192,17 @@ impl App {
         });
 
         if let Some(delta) = page_delta {
-            if let (Some(grid), Some(ds)) = (&mut self.grid_view, &self.dataset) {
-                grid.navigate_page(delta, ctx, &self.video_paths, &self.seek_ranges, &ds.episodes);
-                self.scroll_to_selected = true;
+            if let Some(ds) = &self.dataset {
+                let gds = crate::grid::GridDataset {
+                    video_paths: &self.video_paths,
+                    seek_ranges: &self.seek_ranges,
+                    episodes: &ds.episodes,
+                    fps: ds.info.fps,
+                };
+                if let Some(grid) = &mut self.grid_view {
+                    grid.navigate_page(delta, ctx, &gds);
+                    self.scroll_to_selected = true;
+                }
             }
         }
     }

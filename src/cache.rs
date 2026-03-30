@@ -174,7 +174,7 @@ impl EpisodeCache {
         let next = if delta > 0 {
             current + delta as usize
         } else {
-            current.checked_sub((-delta) as usize).unwrap_or(0)
+            current.saturating_sub((-delta) as usize)
         };
         self.current_texture_for(next).is_some()
     }
@@ -192,13 +192,13 @@ impl EpisodeCache {
     }
 
     /// Spawn a background thread to decode a mid-episode frame.
-    fn spawn_load(&mut self, episode_index: usize, video_path: &PathBuf, seek_range: Option<(f64, f64)>) {
+    fn spawn_load(&mut self, episode_index: usize, video_path: &Path, seek_range: Option<(f64, f64)>) {
         if self.in_flight.contains(&episode_index) {
             return;
         }
         self.in_flight.insert(episode_index);
 
-        let path = video_path.clone();
+        let path = video_path.to_path_buf();
         let tx = self.tx.clone();
         let ctx = self.ctx.clone();
 
@@ -211,7 +211,7 @@ impl EpisodeCache {
 
     /// Synchronously decode a mid-episode frame and upload as a texture.
     fn decode_sync(
-        video_path: &PathBuf,
+        video_path: &Path,
         episode_index: usize,
         seek_range: Option<(f64, f64)>,
         ctx: &egui::Context,
