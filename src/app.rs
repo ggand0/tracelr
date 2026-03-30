@@ -6,6 +6,7 @@ use eframe::egui;
 use crate::annotation::AnnotationState;
 use crate::cache::{DecodeLruCache, EpisodeCache, SliderLoader, VideoPlayer};
 use crate::dataset::LeRobotDataset;
+use crate::grid::GridView;
 use crate::perf::PerfTracker;
 use crate::theme::UiTheme;
 
@@ -40,6 +41,11 @@ pub struct App {
     pub(crate) playing: bool,
     pub(crate) last_frame_time: Option<Instant>,
     pub(crate) frame_slider_dragging: bool,
+
+    // Grid view
+    pub(crate) grid_view: Option<GridView>,
+    pub(crate) grid_cols: usize,
+    pub(crate) grid_rows: usize,
 
     // Mode
     pub(crate) annotate_mode: bool,
@@ -79,6 +85,9 @@ impl App {
             playing: false,
             last_frame_time: None,
             frame_slider_dragging: false,
+            grid_view: None,
+            grid_cols: 2,
+            grid_rows: 2,
             annotate_mode: annotate,
             theme: UiTheme::teal_dark(),
             perf: PerfTracker::new(),
@@ -218,22 +227,27 @@ impl eframe::App for App {
         if let Some(cache) = &mut self.episode_cache {
             cache.poll();
         }
-        // In video mode, if we're waiting for the first frame after seek/init,
-        // poll one frame from the player to display.
-        if self.viewing_video && !self.playing {
-            if let Some(player) = &mut self.player {
-                if self.current_texture.is_none() {
-                    if let Some(tex) = player.poll_next_frame() {
-                        self.current_frame = player.current_frame;
-                        self.current_texture = Some(tex);
-                        self.perf.record_display();
+
+        // Grid mode tick
+        if let Some(grid) = &mut self.grid_view {
+            grid.tick(ctx);
+            self.perf.record_display();
+        } else {
+            // Single-video mode: poll first frame after seek/init
+            if self.viewing_video && !self.playing {
+                if let Some(player) = &mut self.player {
+                    if self.current_texture.is_none() {
+                        if let Some(tex) = player.poll_next_frame() {
+                            self.current_frame = player.current_frame;
+                            self.current_texture = Some(tex);
+                            self.perf.record_display();
+                        }
                     }
                 }
             }
+            // Advance playback
+            self.tick_playback(ctx);
         }
-
-        // Advance playback
-        self.tick_playback(ctx);
 
         self.handle_dropped_files(ctx);
         self.handle_keyboard(ctx);
@@ -242,50 +256,65 @@ impl eframe::App for App {
         // Menu bar
         self.show_menu_bar(ctx);
 
-        // Left panel: episode list
-        egui::SidePanel::left("episode_list")
-            .default_width(160.0)
-            .min_width(120.0)
-            .show(ctx, |ui| {
-                self.show_episode_list(ctx, ui);
-            });
+        let in_grid = self.grid_view.is_some();
 
-        // Right panel: info + annotation
-        egui::SidePanel::right("info_panel")
-            .default_width(200.0)
-            .min_width(160.0)
-            .show(ctx, |ui| {
-                self.show_info_panel(ui);
-            });
+        if !in_grid {
+            // Left panel: episode list
+            egui::SidePanel::left("episode_list")
+                .default_width(160.0)
+                .min_width(120.0)
+                .show(ctx, |ui| {
+                    self.show_episode_list(ctx, ui);
+                });
 
-        // Bottom: slider row + footer row
-        egui::TopBottomPanel::bottom("footer")
-            .exact_height(22.0)
-            .show(ctx, |ui| {
-                if self.viewing_video {
-                    self.show_frame_footer(ui);
-                } else {
-                    self.show_footer(ui);
-                }
-            });
+            // Right panel: info + annotation
+            egui::SidePanel::right("info_panel")
+                .default_width(200.0)
+                .min_width(160.0)
+                .show(ctx, |ui| {
+                    self.show_info_panel(ui);
+                });
 
-        egui::TopBottomPanel::bottom("nav_slider")
-            .exact_height(28.0)
-            .show(ctx, |ui| {
-                if self.viewing_video {
-                    self.show_frame_slider(ctx, ui);
-                } else {
-                    self.show_nav_slider(ctx, ui);
-                }
-            });
+            // Bottom: slider row + footer row
+            egui::TopBottomPanel::bottom("footer")
+                .exact_height(22.0)
+                .show(ctx, |ui| {
+                    if self.viewing_video {
+                        self.show_frame_footer(ui);
+                    } else {
+                        self.show_footer(ui);
+                    }
+                });
 
-        // Central panel: frame display
+            egui::TopBottomPanel::bottom("nav_slider")
+                .exact_height(28.0)
+                .show(ctx, |ui| {
+                    if self.viewing_video {
+                        self.show_frame_slider(ctx, ui);
+                    } else {
+                        self.show_nav_slider(ctx, ui);
+                    }
+                });
+        } else {
+            // Grid mode: minimal footer
+            egui::TopBottomPanel::bottom("grid_footer")
+                .exact_height(22.0)
+                .show(ctx, |ui| {
+                    self.show_grid_footer(ui);
+                });
+        }
+
+        // Central panel
         egui::CentralPanel::default().show(ctx, |ui| {
             if let Some(err) = &self.loading_error {
                 ui.colored_label(egui::Color32::from_rgb(255, 100, 100), err);
                 ui.separator();
             }
-            self.show_frame_display(ui);
+            if self.grid_view.is_some() {
+                self.show_grid_display(ui);
+            } else {
+                self.show_frame_display(ui);
+            }
         });
 
         // Cache debug overlay

@@ -12,18 +12,22 @@ impl App {
             return;
         }
 
-        // Global keys (both modes)
+        let mut g_pressed = false;
         let mut enter_pressed = false;
         let mut escape_pressed = false;
         let mut space_pressed = false;
+        let mut plus_pressed = false;
+        let mut minus_pressed = false;
 
         ctx.input(|i| {
+            g_pressed = i.key_pressed(egui::Key::G);
             enter_pressed = i.key_pressed(egui::Key::Enter);
             escape_pressed = i.key_pressed(egui::Key::Escape);
             space_pressed = i.key_pressed(egui::Key::Space);
+            plus_pressed = i.key_pressed(egui::Key::Plus) || i.key_pressed(egui::Key::Equals);
+            minus_pressed = i.key_pressed(egui::Key::Minus);
 
             if self.annotate_mode {
-                // Annotation shortcuts (1-9)
                 for (key, idx) in [
                     (egui::Key::Num1, 0),
                     (egui::Key::Num2, 1),
@@ -46,18 +50,44 @@ impl App {
             }
         });
 
-        // Escape: pause and exit to thumbnail view
+        // G toggles grid view
+        if g_pressed {
+            self.toggle_grid_view(ctx);
+            return;
+        }
+
+        // Grid mode keyboard
+        if self.grid_view.is_some() {
+            if space_pressed {
+                if let Some(grid) = &mut self.grid_view {
+                    grid.toggle_playing();
+                }
+            }
+            if escape_pressed {
+                self.grid_view = None;
+                return;
+            }
+            // +/- resize grid
+            if plus_pressed {
+                self.grid_resize(1, ctx);
+            }
+            if minus_pressed {
+                self.grid_resize(-1, ctx);
+            }
+            self.handle_keyboard_grid(ctx);
+            return;
+        }
+
+        // Single-video mode
         if escape_pressed && self.viewing_video {
             self.exit_video_mode();
             return;
         }
-        // Enter: re-enter video mode if exited
         if enter_pressed && !self.viewing_video {
             self.enter_video_mode(ctx);
             return;
         }
 
-        // Space toggles play/pause in video mode
         if space_pressed && self.viewing_video {
             self.playing = !self.playing;
             if self.playing {
@@ -67,7 +97,6 @@ impl App {
             }
         }
 
-        // Arrow keys / A/D ALWAYS navigate episodes (even during video playback)
         self.handle_keyboard_episode(ctx);
     }
 
@@ -138,6 +167,25 @@ impl App {
                     "Not a LeRobot dataset: {}\nExpected meta/info.json",
                     path.display()
                 ));
+            }
+        }
+    }
+
+    fn handle_keyboard_grid(&mut self, ctx: &egui::Context) {
+        let mut page_delta: Option<isize> = None;
+
+        ctx.input(|i| {
+            if i.key_pressed(egui::Key::ArrowRight) || i.key_pressed(egui::Key::D) {
+                page_delta = Some(1);
+            }
+            if i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::A) {
+                page_delta = Some(-1);
+            }
+        });
+
+        if let Some(delta) = page_delta {
+            if let (Some(grid), Some(ds)) = (&mut self.grid_view, &self.dataset) {
+                grid.navigate_page(delta, ctx, &self.video_paths, &self.seek_ranges, &ds.episodes);
             }
         }
     }

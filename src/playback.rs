@@ -4,6 +4,7 @@ use eframe::egui;
 
 use crate::app::App;
 use crate::cache::{EpisodeCache, VideoPlayer};
+use crate::grid::GridView;
 use crate::video;
 
 impl App {
@@ -273,5 +274,52 @@ impl App {
         }
 
         ctx.request_repaint();
+    }
+
+    /// Toggle between single-video and grid view.
+    pub(crate) fn toggle_grid_view(&mut self, ctx: &egui::Context) {
+        if self.grid_view.is_some() {
+            // Exit grid → back to single video
+            self.grid_view = None;
+            self.enter_video_mode(ctx);
+        } else {
+            // Enter grid → stop single player, start grid
+            self.exit_video_mode();
+            if let Some(ds) = &self.dataset {
+                let episodes = ds.episodes.clone();
+                let grid = GridView::new(
+                    ctx,
+                    self.grid_cols,
+                    self.grid_rows,
+                    self.current_episode,
+                    &self.video_paths,
+                    &self.seek_ranges,
+                    &episodes,
+                    ds.info.fps,
+                );
+                self.grid_view = Some(grid);
+            }
+        }
+    }
+
+    /// Resize grid by delta steps. Grid sizes cycle through: 1x1, 2x2, 3x3, 4x4.
+    pub(crate) fn grid_resize(&mut self, delta: isize, ctx: &egui::Context) {
+        let current = self.grid_cols as isize;
+        let new_size = (current + delta).clamp(1, 4) as usize;
+        if new_size == self.grid_cols {
+            return;
+        }
+        self.grid_cols = new_size;
+        self.grid_rows = new_size;
+
+        if let (Some(grid), Some(ds)) = (&mut self.grid_view, &self.dataset) {
+            grid.resize(
+                new_size, new_size,
+                ctx,
+                &self.video_paths,
+                &self.seek_ranges,
+                &ds.episodes,
+            );
+        }
     }
 }

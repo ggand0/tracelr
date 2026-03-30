@@ -8,6 +8,7 @@ mod app;
 mod build_info;
 mod cache;
 mod dataset;
+mod grid;
 mod perf;
 mod playback;
 mod theme;

@@ -44,6 +44,11 @@ impl App {
                 });
 
                 ui.menu_button("View", |ui| {
+                    let in_grid = self.grid_view.is_some();
+                    if ui.button(if in_grid { "Single View" } else { "Grid View" }).clicked() {
+                        ui.close_menu();
+                        self.toggle_grid_view(ctx);
+                    }
                     if ui
                         .checkbox(&mut self.show_cache_overlay, "Cache Overlay")
                         .changed()
@@ -536,6 +541,63 @@ impl App {
                     .color(bright),
                 );
             });
+        });
+    }
+
+    pub(crate) fn show_grid_display(&mut self, ui: &mut egui::Ui) {
+        let muted = self.theme.muted;
+        let accent = self.theme.accent;
+        if let Some(grid) = &mut self.grid_view {
+            grid.show(ui, muted, accent);
+        }
+    }
+
+    pub(crate) fn show_grid_footer(&self, ui: &mut egui::Ui) {
+        let font = egui::FontId::monospace(13.0);
+        let bright = egui::Color32::from_gray(200);
+        let dim = egui::Color32::from_gray(160);
+
+        ui.horizontal(|ui| {
+            if let Some(grid) = &self.grid_view {
+                let playing_icon = if grid.playing { "\u{23f8}" } else { "\u{25b6}" };
+                ui.label(
+                    egui::RichText::new(playing_icon)
+                        .font(font.clone())
+                        .color(bright),
+                );
+
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Grid {}x{}",
+                        grid.cols, grid.rows,
+                    ))
+                    .font(font.clone())
+                    .color(bright),
+                );
+
+                ui.separator();
+
+                let total = self.video_paths.len();
+                let end = (grid.start_episode + grid.pane_count()).min(total);
+                ui.label(
+                    egui::RichText::new(format!(
+                        "ep {}-{} / {}",
+                        grid.start_episode,
+                        end.saturating_sub(1),
+                        total,
+                    ))
+                    .font(font.clone())
+                    .color(dim),
+                );
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        egui::RichText::new("[G] exit  [+/-] resize  [←/→] page")
+                            .font(font.clone())
+                            .color(dim),
+                    );
+                });
+            }
         });
     }
 }
