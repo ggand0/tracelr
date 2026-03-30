@@ -1,20 +1,22 @@
 # lerobot-explorer
 
-A fast desktop tool for exploring and annotating [LeRobot](https://github.com/huggingface/lerobot) datasets. Built with Rust, egui, and ffmpeg for real-time video playback of robot demonstration episodes.
+A fast desktop tool for exploring [LeRobot](https://github.com/huggingface/lerobot) datasets. Built with Rust, egui, and ffmpeg for real-time video playback of robot demonstration episodes.
 
-Designed for annotating text prompts on atomic pick-and-place episodes for Vision-Language-Action (VLA) model training.
+Browse episodes, play back videos, and inspect metadata. Optionally enable annotation mode (`--annotate`) to assign text prompts for VLA model training.
 
 ## Features
 
-- **Video playback** — auto-plays episodes at native framerate with Play/Pause (Space), frame stepping (Arrow keys), and scrubbing (slider drag)
-- **Episode navigation** — slide through episodes with arrow keys, skate mode (Shift+Arrow for continuous advance), or click the episode list
+- **Video playback** — auto-plays episodes at native framerate with Play/Pause (Space) and scrubbing (slider drag)
+- **Episode navigation** — arrow keys, skate mode (Shift+Arrow for continuous advance), click the episode list, or drag the slider
+- **Episode cache** — sliding window cache preloads neighboring episodes for instant navigation
+- **Drag and drop** — drop a dataset folder onto the window to open it
+
+### Annotation mode (`--annotate`)
+
 - **Annotation** — assign text prompts to episodes via keyboard shortcuts (1-9) or clickable prompt cards, with color-coded status in the episode list
 - **Configurable prompts** — define prompts per dataset via `prompts.yaml` (see below)
 - **Persistence** — annotations save to `annotations.json` in the dataset directory, auto-loaded on reopen
 - **Export** — export annotations to LeRobot's `tasks.jsonl` + `episodes.jsonl` format
-- **Drag and drop** — drop a dataset folder onto the window to open it
-- **Episode cache** — sliding window cache preloads neighboring episodes for instant navigation
-- **Menu bar** — File (Open, Save, Export, Quit), View (Cache Overlay)
 
 ## Supported LeRobot formats
 
@@ -47,8 +49,11 @@ The `opt-dev` profile gives release-level optimization with faster incremental b
 ## Usage
 
 ```bash
-# Open a dataset directory
+# Open a dataset (viewer mode — browse and play episodes)
 cargo run --profile opt-dev -- /path/to/lerobot/dataset/
+
+# Enable annotation mode (prompt assignment, save/export)
+cargo run --profile opt-dev -- --annotate /path/to/lerobot/dataset/
 
 # Or launch and drag-drop a dataset folder onto the window
 cargo run --profile opt-dev
@@ -65,12 +70,12 @@ RUST_LOG=lerobot_explorer=debug cargo run --profile opt-dev -- /path/to/dataset/
 | `Shift+Left/Right` | Skate (continuous advance while held) |
 | `Home` / `End` | First / last episode |
 | `Space` | Play / pause video |
-| `1`-`9` | Assign prompt to current episode |
 | `Escape` | Exit video mode (show thumbnail) |
 | `Enter` | Re-enter video mode |
-| `Ctrl+S` | Save annotations |
+| `1`-`9` | Assign prompt to current episode (annotation mode) |
+| `Ctrl+S` | Save annotations (annotation mode) |
 
-### Configurable prompts
+### Configurable prompts (annotation mode)
 
 Create a `prompts.yaml` in the dataset directory or `~/.config/lerobot-explorer/prompts.yaml`:
 
@@ -89,7 +94,7 @@ See [`configs/prompts.example.yaml`](configs/prompts.example.yaml) for a full ex
 
 Search order: dataset directory > user config > built-in defaults.
 
-### Annotation output
+### Annotation output (annotation mode)
 
 Annotations save to `<dataset_dir>/annotations.json`:
 
