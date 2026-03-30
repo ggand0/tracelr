@@ -124,6 +124,13 @@ impl App {
             g.start_episode..end
         });
 
+        // Track the first selected episode to auto-scroll
+        let scroll_target = if let Some(range) = &grid_range {
+            Some(range.start)
+        } else {
+            Some(self.current_episode)
+        };
+
         egui::ScrollArea::vertical().show(ui, |ui| {
             for ep in &ds.episodes {
                 let episode_index = ep.episode_index;
@@ -162,6 +169,11 @@ impl App {
 
                     ui.selectable_label(is_selected, &label_text)
                 });
+
+                // Auto-scroll to keep the first selected episode visible
+                if scroll_target == Some(episode_index) {
+                    response.response.scroll_to_me(Some(egui::Align::Center));
+                }
 
                 if response.inner.clicked() {
                     navigate_to = Some(episode_index);
