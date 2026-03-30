@@ -322,4 +322,12 @@ impl App {
             );
         }
     }
+
+    /// Jump the grid to start at a specific episode.
+    pub(crate) fn grid_jump_to(&mut self, episode: usize, ctx: &egui::Context) {
+        if let (Some(grid), Some(ds)) = (&mut self.grid_view, &self.dataset) {
+            grid.jump_to(episode, ctx, &self.video_paths, &self.seek_ranges, &ds.episodes);
+        }
+        self.current_episode = episode;
+    }
 }

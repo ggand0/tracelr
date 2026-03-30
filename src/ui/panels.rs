@@ -45,10 +45,32 @@ impl App {
 
                 ui.menu_button("View", |ui| {
                     let in_grid = self.grid_view.is_some();
-                    if ui.button(if in_grid { "Single View" } else { "Grid View" }).clicked() {
+                    if ui.button(if in_grid { "Single View  [G]" } else { "Grid View  [G]" }).clicked() {
                         ui.close_menu();
                         self.toggle_grid_view(ctx);
                     }
+                    if in_grid {
+                        ui.separator();
+                        ui.label(
+                            egui::RichText::new("Grid Size")
+                                .color(self.theme.muted)
+                                .small(),
+                        );
+                        if let Some((cols, rows)) = grid_size_picker(ui, self.grid_cols, self.grid_rows, self.theme.accent) {
+                            self.grid_cols = cols;
+                            self.grid_rows = rows;
+                            if let (Some(grid), Some(ds)) = (&mut self.grid_view, &self.dataset) {
+                                grid.resize(
+                                    cols, rows,
+                                    ctx,
+                                    &self.video_paths,
+                                    &self.seek_ranges,
+                                    &ds.episodes,
+                                );
+                            }
+                        }
+                    }
+                    ui.separator();
                     if ui
                         .checkbox(&mut self.show_cache_overlay, "Cache Overlay")
                         .changed()
@@ -94,10 +116,20 @@ impl App {
 
         let mut navigate_to = None;
 
+        // Determine which episodes are highlighted (single or grid range)
+        let grid_range = self.grid_view.as_ref().map(|g| {
+            let end = g.start_episode + g.pane_count();
+            g.start_episode..end
+        });
+
         egui::ScrollArea::vertical().show(ui, |ui| {
             for ep in &ds.episodes {
                 let episode_index = ep.episode_index;
-                let is_selected = episode_index == self.current_episode;
+                let is_selected = if let Some(range) = &grid_range {
+                    range.contains(&episode_index)
+                } else {
+                    episode_index == self.current_episode
+                };
 
                 let annot_info = if self.annotate_mode {
                     self.annotations.get(episode_index).and_then(|idx| {
@@ -136,10 +168,14 @@ impl App {
         });
 
         if let Some(ep) = navigate_to {
-            if self.viewing_video {
-                self.exit_video_mode();
+            if self.grid_view.is_some() {
+                self.grid_jump_to(ep, ctx);
+            } else {
+                if self.viewing_video {
+                    self.exit_video_mode();
+                }
+                self.navigate_jump(ep, ctx);
             }
-            self.navigate_jump(ep, ctx);
         }
     }
 
@@ -599,5 +635,73 @@ impl App {
                 });
             }
         });
+    }
+}
+
+/// Interactive grid size picker (like Google Docs table insertion).
+/// Displays a 4x4 mini grid. Hovering highlights from (1,1) to (col, row).
+/// Clicking returns the selected (cols, rows). Returns None if no click.
+fn grid_size_picker(
+    ui: &mut egui::Ui,
+    current_cols: usize,
+    current_rows: usize,
+    accent: egui::Color32,
+) -> Option<(usize, usize)> {
+    let max_cols = 4;
+    let max_rows = 4;
+    let cell_size = 18.0;
+    let cell_gap = 3.0;
+    let total_w = max_cols as f32 * (cell_size + cell_gap) - cell_gap;
+    let total_h = max_rows as f32 * (cell_size + cell_gap) - cell_gap;
+
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(total_w, total_h),
+        egui::Sense::click_and_drag(),
+    );
+
+    // Determine hover position → (hover_col, hover_row) 1-based
+    let (hover_col, hover_row) = if let Some(pos) = response.hover_pos() {
+        let rel = pos - rect.min;
+        let c = ((rel.x / (cell_size + cell_gap)).floor() as usize + 1).min(max_cols);
+        let r = ((rel.y / (cell_size + cell_gap)).floor() as usize + 1).min(max_rows);
+        (c, r)
+    } else {
+        (current_cols, current_rows)
+    };
+
+    // Draw cells
+    for row in 0..max_rows {
+        for col in 0..max_cols {
+            let x = rect.min.x + col as f32 * (cell_size + cell_gap);
+            let y = rect.min.y + row as f32 * (cell_size + cell_gap);
+            let cell_rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(cell_size, cell_size));
+
+            let in_selection = (col + 1) <= hover_col && (row + 1) <= hover_row;
+            let color = if in_selection {
+                accent
+            } else {
+                egui::Color32::from_gray(60)
+            };
+
+            ui.painter().rect_filled(cell_rect, 2.0, color);
+        }
+    }
+
+    // Label below
+    let label_pos = egui::pos2(rect.min.x, rect.max.y + 2.0);
+    ui.painter().text(
+        label_pos,
+        egui::Align2::LEFT_TOP,
+        format!("{}x{}", hover_col, hover_row),
+        egui::FontId::monospace(11.0),
+        egui::Color32::from_gray(180),
+    );
+    // Reserve space for the label
+    ui.allocate_exact_size(egui::vec2(total_w, 14.0), egui::Sense::hover());
+
+    if response.clicked() && (hover_col != current_cols || hover_row != current_rows) {
+        Some((hover_col, hover_row))
+    } else {
+        None
     }
 }

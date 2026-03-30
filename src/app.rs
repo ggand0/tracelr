@@ -258,15 +258,15 @@ impl eframe::App for App {
 
         let in_grid = self.grid_view.is_some();
 
-        if !in_grid {
-            // Left panel: episode list
-            egui::SidePanel::left("episode_list")
-                .default_width(160.0)
-                .min_width(120.0)
-                .show(ctx, |ui| {
-                    self.show_episode_list(ctx, ui);
-                });
+        // Left panel: episode list (always visible)
+        egui::SidePanel::left("episode_list")
+            .default_width(160.0)
+            .min_width(120.0)
+            .show(ctx, |ui| {
+                self.show_episode_list(ctx, ui);
+            });
 
+        if !in_grid {
             // Right panel: info + annotation
             egui::SidePanel::right("info_panel")
                 .default_width(200.0)

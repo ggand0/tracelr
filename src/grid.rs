@@ -212,6 +212,36 @@ impl GridView {
         self.last_frame_time = None;
     }
 
+    /// Jump to a specific start episode, rebuilding all panes.
+    pub fn jump_to(
+        &mut self,
+        start: usize,
+        ctx: &egui::Context,
+        video_paths: &[PathBuf],
+        seek_ranges: &[Option<(f64, f64)>],
+        episodes: &[crate::dataset::EpisodeMeta],
+    ) {
+        let total = video_paths.len();
+        let start = start.min(total.saturating_sub(1));
+
+        self.panes.clear();
+        self.start_episode = start;
+        self.selected_pane = None;
+
+        for i in 0..(self.cols * self.rows) {
+            let ep_idx = start + i;
+            if ep_idx >= total {
+                break;
+            }
+            if let Some(pane) = Self::create_pane(ctx, ep_idx, video_paths, seek_ranges, episodes, self.fps) {
+                self.panes.push(pane);
+            }
+        }
+
+        self.playing = true;
+        self.last_frame_time = None;
+    }
+
     /// Resize the grid (change cols/rows) and rebuild panes from current start_episode.
     pub fn resize(
         &mut self,
