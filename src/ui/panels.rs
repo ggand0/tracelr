@@ -16,22 +16,24 @@ impl App {
                             }
                         }
                     }
-                    if ui.button("Save Annotations  Ctrl+S").clicked() {
-                        ui.close_menu();
-                        self.save_annotations();
-                    }
-                    if ui
-                        .add_enabled(
-                            self.dataset.is_some(),
-                            egui::Button::new("Export to LeRobot..."),
-                        )
-                        .clicked()
-                    {
-                        ui.close_menu();
-                        if let Some(ds) = &self.dataset {
-                            match self.annotations.export_lerobot(ds) {
-                                Ok(()) => log::info!("Exported to LeRobot format"),
-                                Err(e) => log::error!("Export failed: {}", e),
+                    if self.annotate_mode {
+                        if ui.button("Save Annotations  Ctrl+S").clicked() {
+                            ui.close_menu();
+                            self.save_annotations();
+                        }
+                        if ui
+                            .add_enabled(
+                                self.dataset.is_some(),
+                                egui::Button::new("Export to LeRobot..."),
+                            )
+                            .clicked()
+                        {
+                            ui.close_menu();
+                            if let Some(ds) = &self.dataset {
+                                match self.annotations.export_lerobot(ds) {
+                                    Ok(()) => log::info!("Exported to LeRobot format"),
+                                    Err(e) => log::error!("Export failed: {}", e),
+                                }
                             }
                         }
                     }
@@ -72,9 +74,14 @@ impl App {
             }
         };
 
-        let (done, total) = self.annotations.progress(ds.episodes.len());
+        let heading = if self.annotate_mode {
+            let (done, total) = self.annotations.progress(ds.episodes.len());
+            format!("Episodes ({}/{})", done, total)
+        } else {
+            format!("Episodes ({})", ds.episodes.len())
+        };
         ui.label(
-            egui::RichText::new(format!("Episodes ({}/{})", done, total))
+            egui::RichText::new(heading)
                 .strong()
                 .color(self.theme.heading),
         );
@@ -82,35 +89,35 @@ impl App {
 
         let mut navigate_to = None;
 
-        let episode_annotations: Vec<(usize, Option<(String, egui::Color32)>)> = ds
-            .episodes
-            .iter()
-            .map(|ep| {
-                let annot = self.annotations.get(ep.episode_index).and_then(|idx| {
-                    self.annotations
-                        .prompts
-                        .get(idx)
-                        .map(|p| (p.label.clone(), p.color))
-                });
-                (ep.episode_index, annot)
-            })
-            .collect();
-
         egui::ScrollArea::vertical().show(ui, |ui| {
-            for (episode_index, annot_info) in &episode_annotations {
-                let is_selected = *episode_index == self.current_episode;
+            for ep in &ds.episodes {
+                let episode_index = ep.episode_index;
+                let is_selected = episode_index == self.current_episode;
+
+                let annot_info = if self.annotate_mode {
+                    self.annotations.get(episode_index).and_then(|idx| {
+                        self.annotations
+                            .prompts
+                            .get(idx)
+                            .map(|p| (p.label.clone(), p.color))
+                    })
+                } else {
+                    None
+                };
 
                 let response = ui.horizontal(|ui| {
-                    if let Some((_, color)) = annot_info {
-                        let (rect, _) =
+                    if self.annotate_mode {
+                        if let Some((_, color)) = &annot_info {
+                            let (rect, _) =
+                                ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                            ui.painter().circle_filled(rect.center(), 4.0, *color);
+                        } else {
                             ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-                        ui.painter().circle_filled(rect.center(), 4.0, *color);
-                    } else {
-                        ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                        }
                     }
 
                     let mut label_text = format!("ep {:03}", episode_index);
-                    if let Some((label, _)) = annot_info {
+                    if let Some((label, _)) = &annot_info {
                         label_text = format!("{} - {}", label_text, label);
                     }
 
@@ -118,7 +125,7 @@ impl App {
                 });
 
                 if response.inner.clicked() {
-                    navigate_to = Some(*episode_index);
+                    navigate_to = Some(episode_index);
                 }
             }
         });
@@ -189,9 +196,10 @@ impl App {
             }
         }
 
-        ui.add_space(16.0);
-
-        self.show_annotation_panel(ui);
+        if self.annotate_mode {
+            ui.add_space(16.0);
+            self.show_annotation_panel(ui);
+        }
     }
 
     fn show_annotation_panel(&mut self, ui: &mut egui::Ui) {

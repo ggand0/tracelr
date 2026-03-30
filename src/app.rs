@@ -41,6 +41,9 @@ pub struct App {
     pub(crate) last_frame_time: Option<Instant>,
     pub(crate) frame_slider_dragging: bool,
 
+    // Mode
+    pub(crate) annotate_mode: bool,
+
     // UI
     pub(crate) theme: UiTheme,
     pub(crate) perf: PerfTracker,
@@ -49,10 +52,15 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(_cc: &eframe::CreationContext, initial_path: Option<PathBuf>) -> Self {
+    pub fn new(_cc: &eframe::CreationContext, initial_path: Option<PathBuf>, annotate: bool) -> Self {
+        let annotations = if annotate {
+            AnnotationState::load_prompts(initial_path.as_deref())
+        } else {
+            AnnotationState::default_empty()
+        };
         let mut app = Self {
             dataset: None,
-            annotations: AnnotationState::load_prompts(initial_path.as_deref()),
+            annotations,
             current_episode: 0,
             current_video_key_index: 0,
             current_texture: None,
@@ -71,6 +79,7 @@ impl App {
             playing: false,
             last_frame_time: None,
             frame_slider_dragging: false,
+            annotate_mode: annotate,
             theme: UiTheme::teal_dark(),
             perf: PerfTracker::new(),
             initial_size_set: false,
@@ -120,14 +129,13 @@ impl App {
                 self.current_texture = None;
                 self.loading_error = None;
 
-                // Load prompts config for this dataset
-                self.annotations = AnnotationState::load_prompts(Some(path));
-
-                // Try to load saved annotations
-                let annot_path = path.join("annotations.json");
-                if annot_path.exists() {
-                    if let Err(e) = self.annotations.load_json(&annot_path) {
-                        log::warn!("Failed to load annotations: {}", e);
+                if self.annotate_mode {
+                    self.annotations = AnnotationState::load_prompts(Some(path));
+                    let annot_path = path.join("annotations.json");
+                    if annot_path.exists() {
+                        if let Err(e) = self.annotations.load_json(&annot_path) {
+                            log::warn!("Failed to load annotations: {}", e);
+                        }
                     }
                 }
             }
@@ -163,8 +171,12 @@ impl App {
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
-            let (done, total) = self.annotations.progress(ds.episodes.len());
-            format!("lerobot-explorer - {} [{}/{}]", dir_name, done, total)
+            if self.annotate_mode {
+                let (done, total) = self.annotations.progress(ds.episodes.len());
+                format!("lerobot-explorer - {} [{}/{}]", dir_name, done, total)
+            } else {
+                format!("lerobot-explorer - {} ({} episodes)", dir_name, ds.episodes.len())
+            }
         } else {
             "lerobot-explorer".to_string()
         };

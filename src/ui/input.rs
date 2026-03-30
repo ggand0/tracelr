@@ -22,25 +22,27 @@ impl App {
             escape_pressed = i.key_pressed(egui::Key::Escape);
             space_pressed = i.key_pressed(egui::Key::Space);
 
-            // Annotation shortcuts (1-9) — work in both modes
-            for (key, idx) in [
-                (egui::Key::Num1, 0),
-                (egui::Key::Num2, 1),
-                (egui::Key::Num3, 2),
-                (egui::Key::Num4, 3),
-                (egui::Key::Num5, 4),
-                (egui::Key::Num6, 5),
-                (egui::Key::Num7, 6),
-                (egui::Key::Num8, 7),
-                (egui::Key::Num9, 8),
-            ] {
-                if i.key_pressed(key) && idx < self.annotations.prompts.len() {
-                    self.annotations.set(self.current_episode, idx);
+            if self.annotate_mode {
+                // Annotation shortcuts (1-9)
+                for (key, idx) in [
+                    (egui::Key::Num1, 0),
+                    (egui::Key::Num2, 1),
+                    (egui::Key::Num3, 2),
+                    (egui::Key::Num4, 3),
+                    (egui::Key::Num5, 4),
+                    (egui::Key::Num6, 5),
+                    (egui::Key::Num7, 6),
+                    (egui::Key::Num8, 7),
+                    (egui::Key::Num9, 8),
+                ] {
+                    if i.key_pressed(key) && idx < self.annotations.prompts.len() {
+                        self.annotations.set(self.current_episode, idx);
+                    }
                 }
-            }
 
-            if i.modifiers.command && i.key_pressed(egui::Key::S) {
-                self.save_annotations();
+                if i.modifiers.command && i.key_pressed(egui::Key::S) {
+                    self.save_annotations();
+                }
             }
         });
 

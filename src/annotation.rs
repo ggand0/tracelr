@@ -135,6 +135,15 @@ impl AnnotationState {
         })
     }
 
+    /// Empty state for viewer-only mode (no annotation).
+    pub fn default_empty() -> Self {
+        Self {
+            annotations: BTreeMap::new(),
+            prompts: Vec::new(),
+            dirty: false,
+        }
+    }
+
     /// Hardcoded cube organization task prompts.
     fn default_cube_task() -> Self {
         Self {

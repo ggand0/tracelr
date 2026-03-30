@@ -15,10 +15,14 @@ mod ui;
 mod video;
 
 #[derive(Parser)]
-#[command(name = "lerobot-explorer", about = "LeRobot dataset annotation tool")]
+#[command(name = "lerobot-explorer", about = "LeRobot dataset explorer and annotation tool")]
 struct Args {
     /// Path to a LeRobot dataset directory
     path: Option<PathBuf>,
+
+    /// Enable annotation mode (prompt assignment, save/export)
+    #[arg(long)]
+    annotate: bool,
 }
 
 fn main() -> eframe::Result {
@@ -35,6 +39,6 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "lerobot-explorer",
         options,
-        Box::new(move |cc| Ok(Box::new(app::App::new(cc, args.path)))),
+        Box::new(move |cc| Ok(Box::new(app::App::new(cc, args.path, args.annotate)))),
     )
 }
