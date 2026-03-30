@@ -9,7 +9,9 @@ mod build_info;
 mod cache;
 mod dataset;
 mod perf;
+mod playback;
 mod theme;
+mod ui;
 mod video;
 
 #[derive(Parser)]

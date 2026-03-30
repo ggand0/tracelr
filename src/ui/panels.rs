@@ -1,0 +1,533 @@
+use eframe::egui;
+
+use crate::app::App;
+
+impl App {
+    pub(crate) fn show_menu_bar(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
+            egui::menu::bar(ui, |ui| {
+                ui.menu_button("File", |ui| {
+                    if ui.button("Open Dataset...").clicked() {
+                        ui.close_menu();
+                        if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                            self.load_dataset(&path);
+                            if self.dataset.is_some() {
+                                self.init_cache(ctx);
+                            }
+                        }
+                    }
+                    if ui.button("Save Annotations  Ctrl+S").clicked() {
+                        ui.close_menu();
+                        self.save_annotations();
+                    }
+                    if ui
+                        .add_enabled(
+                            self.dataset.is_some(),
+                            egui::Button::new("Export to LeRobot..."),
+                        )
+                        .clicked()
+                    {
+                        ui.close_menu();
+                        if let Some(ds) = &self.dataset {
+                            match self.annotations.export_lerobot(ds) {
+                                Ok(()) => log::info!("Exported to LeRobot format"),
+                                Err(e) => log::error!("Export failed: {}", e),
+                            }
+                        }
+                    }
+                    ui.separator();
+                    if ui.button("Quit").clicked() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                });
+
+                ui.menu_button("View", |ui| {
+                    if ui
+                        .checkbox(&mut self.show_cache_overlay, "Cache Overlay")
+                        .changed()
+                    {
+                        ui.close_menu();
+                    }
+                });
+
+                // FPS display (right-aligned)
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        egui::RichText::new(self.perf.fps_text())
+                            .monospace()
+                            .color(self.theme.muted)
+                            .size(11.0),
+                    );
+                });
+            });
+        });
+    }
+
+    pub(crate) fn show_episode_list(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
+        let ds = match &self.dataset {
+            Some(ds) => ds,
+            None => {
+                ui.label("No dataset loaded");
+                return;
+            }
+        };
+
+        let (done, total) = self.annotations.progress(ds.episodes.len());
+        ui.label(
+            egui::RichText::new(format!("Episodes ({}/{})", done, total))
+                .strong()
+                .color(self.theme.heading),
+        );
+        ui.separator();
+
+        let mut navigate_to = None;
+
+        let episode_annotations: Vec<(usize, Option<(String, egui::Color32)>)> = ds
+            .episodes
+            .iter()
+            .map(|ep| {
+                let annot = self.annotations.get(ep.episode_index).and_then(|idx| {
+                    self.annotations
+                        .prompts
+                        .get(idx)
+                        .map(|p| (p.label.clone(), p.color))
+                });
+                (ep.episode_index, annot)
+            })
+            .collect();
+
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for (episode_index, annot_info) in &episode_annotations {
+                let is_selected = *episode_index == self.current_episode;
+
+                let response = ui.horizontal(|ui| {
+                    if let Some((_, color)) = annot_info {
+                        let (rect, _) =
+                            ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                        ui.painter().circle_filled(rect.center(), 4.0, *color);
+                    } else {
+                        ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                    }
+
+                    let mut label_text = format!("ep {:03}", episode_index);
+                    if let Some((label, _)) = annot_info {
+                        label_text = format!("{} - {}", label_text, label);
+                    }
+
+                    ui.selectable_label(is_selected, &label_text)
+                });
+
+                if response.inner.clicked() {
+                    navigate_to = Some(*episode_index);
+                }
+            }
+        });
+
+        if let Some(ep) = navigate_to {
+            if self.viewing_video {
+                self.exit_video_mode();
+            }
+            self.navigate_jump(ep, ctx);
+        }
+    }
+
+    pub(crate) fn show_info_panel(&mut self, ui: &mut egui::Ui) {
+        let ds = match &self.dataset {
+            Some(ds) => ds,
+            None => return,
+        };
+
+        ui.label(
+            egui::RichText::new("Episode Info")
+                .strong()
+                .color(self.theme.heading),
+        );
+        ui.separator();
+
+        if let Some(ep) = ds.episodes.get(self.current_episode) {
+            let info_rows: Vec<(&str, String)> = vec![
+                (
+                    "Episode:",
+                    format!("{} / {}", ep.episode_index, ds.episodes.len()),
+                ),
+                ("Frames:", format!("{}", ep.length)),
+                (
+                    "Duration:",
+                    format!("{:.1}s", ep.length as f64 / ds.info.fps as f64),
+                ),
+                ("FPS:", format!("{}", ds.info.fps)),
+            ];
+
+            for (label, value) in &info_rows {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(*label).color(self.theme.muted));
+                    ui.label(value);
+                });
+            }
+
+            if ds.info.video_keys.len() > 1 {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Camera:").color(self.theme.muted));
+                    let current_key = ds
+                        .info
+                        .video_keys
+                        .get(self.current_video_key_index)
+                        .cloned()
+                        .unwrap_or_default();
+                    let display_name = current_key
+                        .strip_prefix("observation.images.")
+                        .unwrap_or(&current_key);
+                    ui.label(display_name);
+                });
+            }
+
+            if !ep.tasks.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Task:").color(self.theme.muted));
+                    ui.label(&ep.tasks[0]);
+                });
+            }
+        }
+
+        ui.add_space(16.0);
+
+        self.show_annotation_panel(ui);
+    }
+
+    fn show_annotation_panel(&mut self, ui: &mut egui::Ui) {
+        ui.label(
+            egui::RichText::new("Annotation")
+                .strong()
+                .color(self.theme.heading),
+        );
+        ui.separator();
+
+        let current_annotation = self.annotations.get(self.current_episode);
+
+        let prompt_data: Vec<(usize, String, egui::Color32)> = self
+            .annotations
+            .prompts
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (i, p.label.clone(), p.color))
+            .collect();
+
+        for (i, label, color) in &prompt_data {
+            let is_selected = current_annotation == Some(*i);
+            let shortcut = format!("[{}] ", i + 1);
+
+            let response = ui.horizontal(|ui| {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                ui.painter().circle_filled(rect.center(), 6.0, *color);
+
+                let text = format!("{}{}", shortcut, label);
+                let rich = if is_selected {
+                    egui::RichText::new(text).strong().color(*color)
+                } else {
+                    egui::RichText::new(text)
+                };
+                ui.selectable_label(is_selected, rich)
+            });
+
+            if response.inner.clicked() {
+                if is_selected {
+                    self.annotations.clear(self.current_episode);
+                } else {
+                    self.annotations.set(self.current_episode, *i);
+                }
+            }
+        }
+
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            if ui.button("Save (Ctrl+S)").clicked() {
+                self.save_annotations();
+            }
+            if self.annotations.dirty {
+                ui.label(
+                    egui::RichText::new("unsaved")
+                        .color(egui::Color32::from_rgb(255, 200, 60))
+                        .small(),
+                );
+            }
+        });
+
+        if let Some(path) = self.annotation_json_path() {
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(path).color(self.theme.muted).small());
+        }
+    }
+
+    pub(crate) fn show_frame_display(&self, ui: &mut egui::Ui) {
+        if let Some(tex) = &self.current_texture {
+            let available = ui.available_size();
+            let tex_size = tex.size_vec2();
+            let scale = (available.x / tex_size.x)
+                .min(available.y / tex_size.y)
+                .min(1.0);
+            let display_size = tex_size * scale;
+            ui.centered_and_justified(|ui| {
+                ui.image(egui::load::SizedTexture::new(tex.id(), display_size));
+            });
+        } else if self.dataset.is_some() {
+            ui.centered_and_justified(|ui| {
+                ui.label(
+                    egui::RichText::new("Loading...")
+                        .color(self.theme.muted)
+                        .size(18.0),
+                );
+            });
+        } else {
+            ui.centered_and_justified(|ui| {
+                ui.label(
+                    egui::RichText::new("Drag and drop a LeRobot dataset folder here")
+                        .color(self.theme.muted)
+                        .size(18.0),
+                );
+            });
+        }
+    }
+
+    pub(crate) fn show_nav_slider(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
+        let total = self.video_paths.len();
+        if total <= 1 {
+            return;
+        }
+
+        let max = total - 1;
+        let accent = self.theme.accent;
+
+        let slider_width = ui.available_width();
+        let thickness = ui
+            .text_style_height(&egui::TextStyle::Body)
+            .max(ui.spacing().interact_size.y);
+        let (rect, response) =
+            ui.allocate_exact_size(egui::vec2(slider_width, thickness), egui::Sense::drag());
+
+        let handle_radius = rect.height() / 2.5;
+        let rail_radius = 4.0_f32;
+        let cy = rect.center().y;
+        let handle_range = (rect.left() + handle_radius)..=(rect.right() - handle_radius);
+
+        let mut idx = self.current_episode;
+
+        if let Some(pos) = response.interact_pointer_pos() {
+            let usable = rect.x_range().shrink(handle_radius);
+            let drag_t = ((pos.x - usable.min) / (usable.max - usable.min)).clamp(0.0, 1.0);
+            let new_idx = (max as f32 * drag_t).round() as usize;
+
+            if !self.slider_dragging {
+                self.slider_dragging = true;
+            }
+
+            if new_idx != self.current_episode {
+                self.navigate_slider_drag(new_idx, ctx);
+            }
+            idx = self.current_episode;
+        }
+
+        if response.drag_stopped() && self.slider_dragging {
+            self.slider_dragging = false;
+            self.navigate_jump(self.current_episode, ctx);
+        }
+
+        // Draw rail
+        let rail = egui::Rect::from_min_max(
+            egui::pos2(rect.left(), cy - rail_radius),
+            egui::pos2(rect.right(), cy + rail_radius),
+        );
+        let t = idx as f32 / max as f32;
+        let handle_x = egui::lerp(handle_range, t);
+
+        ui.painter()
+            .rect_filled(rail, rail_radius, egui::Color32::from_gray(60));
+        let filled = egui::Rect::from_min_max(rail.min, egui::pos2(handle_x, rail.max.y));
+        ui.painter().rect_filled(filled, rail_radius, accent);
+        ui.painter().circle(
+            egui::pos2(handle_x, cy),
+            handle_radius,
+            accent,
+            egui::Stroke::NONE,
+        );
+    }
+
+    pub(crate) fn show_footer(&self, ui: &mut egui::Ui) {
+        let ds = match &self.dataset {
+            Some(ds) => ds,
+            None => return,
+        };
+
+        let total = ds.episodes.len();
+        let ep = ds.episodes.get(self.current_episode);
+        let font = egui::FontId::monospace(13.0);
+        let bright = egui::Color32::from_gray(200);
+        let dim = egui::Color32::from_gray(160);
+
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(format!("ep {:03}", self.current_episode))
+                    .font(font.clone())
+                    .color(bright),
+            );
+
+            if let Some(tex) = &self.current_texture {
+                ui.separator();
+                ui.label(
+                    egui::RichText::new(format!("{}x{}", tex.size()[0], tex.size()[1]))
+                        .font(font.clone())
+                        .color(dim),
+                );
+            }
+
+            if let Some(ep) = ep {
+                ui.separator();
+                ui.label(
+                    egui::RichText::new(format!("{} frames", ep.length))
+                        .font(font.clone())
+                        .color(dim),
+                );
+            }
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    egui::RichText::new(format!("{} / {}", self.current_episode + 1, total))
+                        .font(font.clone())
+                        .color(bright),
+                );
+            });
+        });
+    }
+
+    pub(crate) fn show_frame_slider(&mut self, _ctx: &egui::Context, ui: &mut egui::Ui) {
+        let ep_length = self.dataset.as_ref()
+            .and_then(|ds| ds.episodes.get(self.current_episode))
+            .map(|ep| ep.length)
+            .unwrap_or(0);
+        if ep_length <= 1 {
+            return;
+        }
+
+        let max = ep_length - 1;
+        let accent = self.theme.accent;
+
+        let slider_width = ui.available_width();
+        let thickness = ui
+            .text_style_height(&egui::TextStyle::Body)
+            .max(ui.spacing().interact_size.y);
+        let (rect, response) =
+            ui.allocate_exact_size(egui::vec2(slider_width, thickness), egui::Sense::drag());
+
+        let handle_radius = rect.height() / 2.5;
+        let rail_radius = 4.0_f32;
+        let cy = rect.center().y;
+        let handle_range = (rect.left() + handle_radius)..=(rect.right() - handle_radius);
+
+        // Episode-relative frame position
+        let ep_frame = self.current_frame.saturating_sub(self.episode_start_frame);
+        let mut idx = ep_frame;
+
+        if let Some(pos) = response.interact_pointer_pos() {
+            let usable = rect.x_range().shrink(handle_radius);
+            let drag_t = ((pos.x - usable.min) / (usable.max - usable.min)).clamp(0.0, 1.0);
+            let new_ep_frame = (max as f32 * drag_t).round() as usize;
+
+            if !self.frame_slider_dragging {
+                self.frame_slider_dragging = true;
+                self.playing = false;
+            }
+
+            let new_abs_frame = self.episode_start_frame + new_ep_frame;
+            if new_abs_frame != self.current_frame {
+                self.current_frame = new_abs_frame;
+            }
+            idx = new_ep_frame;
+        }
+
+        if response.drag_stopped() && self.frame_slider_dragging {
+            self.frame_slider_dragging = false;
+            if let Some(player) = &mut self.player {
+                player.seek(self.current_frame);
+            }
+        }
+
+        // Draw rail
+        let rail = egui::Rect::from_min_max(
+            egui::pos2(rect.left(), cy - rail_radius),
+            egui::pos2(rect.right(), cy + rail_radius),
+        );
+        let t = if max > 0 { idx as f32 / max as f32 } else { 0.0 };
+        let handle_x = egui::lerp(handle_range, t);
+
+        ui.painter()
+            .rect_filled(rail, rail_radius, egui::Color32::from_gray(60));
+        let filled = egui::Rect::from_min_max(rail.min, egui::pos2(handle_x, rail.max.y));
+        ui.painter().rect_filled(filled, rail_radius, accent);
+        ui.painter().circle(
+            egui::pos2(handle_x, cy),
+            handle_radius,
+            accent,
+            egui::Stroke::NONE,
+        );
+    }
+
+    pub(crate) fn show_frame_footer(&mut self, ui: &mut egui::Ui) {
+        let font = egui::FontId::monospace(13.0);
+        let bright = egui::Color32::from_gray(200);
+        let dim = egui::Color32::from_gray(160);
+
+        let ep_length = self.dataset.as_ref()
+            .and_then(|ds| ds.episodes.get(self.current_episode))
+            .map(|ep| ep.length)
+            .unwrap_or(0);
+        let fps = self.player.as_ref().map(|p| p.fps).unwrap_or(30);
+        let ep_frame = self.current_frame.saturating_sub(self.episode_start_frame);
+
+        ui.horizontal(|ui| {
+            // Clickable play/pause button
+            let play_icon = if self.playing { "\u{23f8}" } else { "\u{25b6}" };
+            let btn = ui.button(
+                egui::RichText::new(play_icon)
+                    .font(font.clone())
+                    .color(bright),
+            );
+            if btn.clicked() {
+                self.playing = !self.playing;
+                if self.playing {
+                    self.last_frame_time = Some(std::time::Instant::now());
+                } else {
+                    self.last_frame_time = None;
+                }
+            }
+
+            ui.label(
+                egui::RichText::new(format!("ep {:03}", self.current_episode))
+                    .font(font.clone())
+                    .color(bright),
+            );
+
+            // Timecode (episode-relative)
+            let time_s = ep_frame as f64 / fps as f64;
+            let total_s = ep_length as f64 / fps as f64;
+            ui.separator();
+            ui.label(
+                egui::RichText::new(format!("{:.1}s / {:.1}s", time_s, total_s))
+                    .font(font.clone())
+                    .color(dim),
+            );
+
+            // Right-aligned: frame index (episode-relative)
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "frame {} / {}",
+                        ep_frame + 1,
+                        ep_length
+                    ))
+                    .font(font.clone())
+                    .color(bright),
+                );
+            });
+        });
+    }
+}
