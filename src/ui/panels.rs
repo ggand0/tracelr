@@ -49,25 +49,27 @@ impl App {
                         ui.close_menu();
                         self.toggle_grid_view(ctx);
                     }
-                    if in_grid {
-                        ui.separator();
-                        ui.label(
-                            egui::RichText::new("Grid Size")
-                                .color(self.theme.muted)
-                                .small(),
-                        );
-                        if let Some((cols, rows)) = grid_size_picker(ui, self.grid_cols, self.grid_rows, self.theme.accent) {
-                            self.grid_cols = cols;
-                            self.grid_rows = rows;
-                            if let (Some(grid), Some(ds)) = (&mut self.grid_view, &self.dataset) {
-                                grid.resize(
-                                    cols, rows,
-                                    ctx,
-                                    &self.video_paths,
-                                    &self.seek_ranges,
-                                    &ds.episodes,
-                                );
-                            }
+                    ui.separator();
+                    ui.label(
+                        egui::RichText::new("Grid Size")
+                            .color(self.theme.muted)
+                            .small(),
+                    );
+                    if let Some((cols, rows)) = grid_size_picker(ui, self.grid_cols, self.grid_rows, self.theme.accent) {
+                        self.grid_cols = cols;
+                        self.grid_rows = rows;
+                        if !in_grid {
+                            // Enter grid mode with the selected size
+                            self.toggle_grid_view(ctx);
+                        }
+                        if let (Some(grid), Some(ds)) = (&mut self.grid_view, &self.dataset) {
+                            grid.resize(
+                                cols, rows,
+                                ctx,
+                                &self.video_paths,
+                                &self.seek_ranges,
+                                &ds.episodes,
+                            );
                         }
                     }
                     ui.separator();
