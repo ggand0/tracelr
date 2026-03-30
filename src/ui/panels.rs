@@ -124,17 +124,8 @@ impl App {
             g.start_episode..end
         });
 
-        // Scroll to both first and last selected episodes so the full range is visible
-        let scroll_first = if let Some(range) = &grid_range {
-            Some(range.start)
-        } else {
-            Some(self.current_episode)
-        };
-        let scroll_last = if let Some(range) = &grid_range {
-            Some(range.end.saturating_sub(1))
-        } else {
-            Some(self.current_episode)
-        };
+        let should_scroll = self.scroll_to_selected;
+        let mut scroll_rect: Option<egui::Rect> = None;
 
         egui::ScrollArea::vertical().show(ui, |ui| {
             for ep in &ds.episodes {
@@ -175,20 +166,28 @@ impl App {
                     ui.selectable_label(is_selected, &label_text)
                 });
 
-                // Two-frame auto-scroll: last item first, then first item
-                if self.scroll_to_selected == 2 && scroll_last == Some(episode_index) {
-                    response.response.scroll_to_me(None);
-                    self.scroll_to_selected = 1;
-                } else if self.scroll_to_selected == 1 && scroll_first == Some(episode_index) {
-                    response.response.scroll_to_me(None);
-                    self.scroll_to_selected = 0;
+                // Accumulate rect of all selected items for scroll_to_rect
+                if should_scroll && is_selected {
+                    scroll_rect = Some(match scroll_rect {
+                        Some(r) => r.union(response.response.rect),
+                        None => response.response.rect,
+                    });
                 }
 
                 if response.inner.clicked() {
                     navigate_to = Some(episode_index);
                 }
             }
+
+            // Scroll to show all selected episodes
+            if let Some(rect) = scroll_rect {
+                ui.scroll_to_rect(rect, None);
+            }
         });
+
+        if should_scroll {
+            self.scroll_to_selected = false;
+        }
 
         if let Some(ep) = navigate_to {
             if self.grid_view.is_some() {

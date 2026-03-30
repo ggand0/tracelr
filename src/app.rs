@@ -47,9 +47,9 @@ pub struct App {
     pub(crate) grid_cols: usize,
     pub(crate) grid_rows: usize,
 
-    /// Countdown for auto-scrolling the episode list.
-    /// 2 = scroll to last selected (this frame), 1 = scroll to first (next frame), 0 = idle.
-    pub(crate) scroll_to_selected: u8,
+    /// Set to true when navigation changes the selected episode(s),
+    /// consumed after one frame to auto-scroll the episode list.
+    pub(crate) scroll_to_selected: bool,
 
     // Mode
     pub(crate) annotate_mode: bool,
@@ -92,7 +92,7 @@ impl App {
             grid_view: None,
             grid_cols: 2,
             grid_rows: 2,
-            scroll_to_selected: 0,
+            scroll_to_selected: false,
             annotate_mode: annotate,
             theme: UiTheme::teal_dark(),
             perf: PerfTracker::new(),
