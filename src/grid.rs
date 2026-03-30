@@ -5,6 +5,12 @@ use eframe::egui;
 
 use crate::cache::VideoPlayer;
 
+const PANE_SPACING: f32 = 4.0;
+const PANE_LABEL_HEIGHT: f32 = 18.0;
+const PANE_LABEL_FONT_SIZE: f32 = 11.0;
+const PANE_BORDER_RADIUS: f32 = 2.0;
+const PANE_BORDER_WIDTH: f32 = 2.0;
+
 /// Dataset context needed to create grid panes.
 pub(crate) struct GridDataset<'a> {
     pub video_paths: &'a [PathBuf],
@@ -232,9 +238,8 @@ impl GridView {
         let cols = self.cols;
         let rows = self.rows;
 
-        let spacing = 4.0;
-        let pane_w = (available.x - spacing * (cols as f32 - 1.0)) / cols as f32;
-        let pane_h = (available.y - spacing * (rows as f32 - 1.0)) / rows as f32;
+        let pane_w = (available.x - PANE_SPACING * (cols as f32 - 1.0)) / cols as f32;
+        let pane_h = (available.y - PANE_SPACING * (rows as f32 - 1.0)) / rows as f32;
 
         let origin = ui.cursor().min;
 
@@ -242,8 +247,8 @@ impl GridView {
             let col = idx % cols;
             let row = idx / cols;
 
-            let x = origin.x + col as f32 * (pane_w + spacing);
-            let y = origin.y + row as f32 * (pane_h + spacing);
+            let x = origin.x + col as f32 * (pane_w + PANE_SPACING);
+            let y = origin.y + row as f32 * (pane_h + PANE_SPACING);
             let rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(pane_w, pane_h));
 
             // Allocate interactive area
@@ -260,16 +265,14 @@ impl GridView {
             } else {
                 egui::Color32::from_gray(30)
             };
-            ui.painter().rect_filled(rect, 2.0, bg);
+            ui.painter().rect_filled(rect, PANE_BORDER_RADIUS, bg);
 
             // Video frame
             if let Some(tex) = &pane.current_texture {
                 let tex_size = tex.size_vec2();
-                // Fit within pane, leaving room for label
-                let label_h = 18.0;
                 let img_rect = egui::Rect::from_min_size(
                     rect.min,
-                    egui::vec2(pane_w, pane_h - label_h),
+                    egui::vec2(pane_w, pane_h - PANE_LABEL_HEIGHT),
                 );
                 let scale = (img_rect.width() / tex_size.x)
                     .min(img_rect.height() / tex_size.y)
@@ -291,18 +294,18 @@ impl GridView {
             // Episode label at bottom of pane
             let ep_frame = pane.current_frame.saturating_sub(pane.episode_start_frame);
             let label = format!("ep {:03}  {}/{}", pane.episode_index, ep_frame + 1, pane.total_frames);
-            let label_pos = egui::pos2(rect.min.x + 4.0, rect.max.y - 16.0);
+            let label_pos = egui::pos2(rect.min.x + PANE_SPACING, rect.max.y - PANE_LABEL_HEIGHT + 2.0);
             ui.painter().text(
                 label_pos,
                 egui::Align2::LEFT_TOP,
                 &label,
-                egui::FontId::monospace(11.0),
+                egui::FontId::monospace(PANE_LABEL_FONT_SIZE),
                 if is_selected { theme_accent } else { theme_muted },
             );
 
             // Selection border
             if is_selected {
-                ui.painter().rect_stroke(rect, 2.0, egui::Stroke::new(2.0, theme_accent), egui::StrokeKind::Outside);
+                ui.painter().rect_stroke(rect, PANE_BORDER_RADIUS, egui::Stroke::new(PANE_BORDER_WIDTH, theme_accent), egui::StrokeKind::Outside);
             }
         }
     }
