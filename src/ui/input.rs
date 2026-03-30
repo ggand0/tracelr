@@ -158,9 +158,17 @@ impl App {
 
         if let Some(path) = dropped.first() {
             if dataset::is_lerobot_dataset(path) {
+                let was_grid = self.grid_view.is_some();
+                self.grid_view = None;
+                self.exit_video_mode();
                 self.load_dataset(path);
                 if self.dataset.is_some() {
                     self.init_cache(ctx);
+                    if was_grid {
+                        self.toggle_grid_view(ctx);
+                    } else {
+                        self.enter_video_mode(ctx);
+                    }
                 }
             } else {
                 self.loading_error = Some(format!(
