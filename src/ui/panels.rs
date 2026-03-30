@@ -124,9 +124,14 @@ impl App {
             g.start_episode..end
         });
 
-        // Track the first selected episode to auto-scroll
-        let scroll_target = if let Some(range) = &grid_range {
+        // Scroll to both first and last selected episodes so the full range is visible
+        let scroll_first = if let Some(range) = &grid_range {
             Some(range.start)
+        } else {
+            Some(self.current_episode)
+        };
+        let scroll_last = if let Some(range) = &grid_range {
+            Some(range.end.saturating_sub(1))
         } else {
             Some(self.current_episode)
         };
@@ -170,10 +175,15 @@ impl App {
                     ui.selectable_label(is_selected, &label_text)
                 });
 
-                // Auto-scroll only when navigation just changed the selection
-                if self.scroll_to_selected && scroll_target == Some(episode_index) {
-                    response.response.scroll_to_me(None);
-                    self.scroll_to_selected = false;
+                // Auto-scroll: bring both first and last selected into view
+                if self.scroll_to_selected {
+                    if scroll_last == Some(episode_index) {
+                        response.response.scroll_to_me(None);
+                    }
+                    if scroll_first == Some(episode_index) {
+                        response.response.scroll_to_me(None);
+                        self.scroll_to_selected = false;
+                    }
                 }
 
                 if response.inner.clicked() {
