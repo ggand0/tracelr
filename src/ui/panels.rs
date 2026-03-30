@@ -172,7 +172,7 @@ impl App {
 
                 // Auto-scroll only when navigation just changed the selection
                 if self.scroll_to_selected && scroll_target == Some(episode_index) {
-                    response.response.scroll_to_me(Some(egui::Align::Center));
+                    response.response.scroll_to_me(None);
                     self.scroll_to_selected = false;
                 }
 
