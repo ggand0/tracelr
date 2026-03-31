@@ -51,12 +51,21 @@ Both formats are auto-detected from `meta/info.json`.
 
   **Windows**
 
-  Download an FFmpeg "shared" build from [ffmpeg.org/download](https://ffmpeg.org/download.html#build-windows), extract it, and set the `FFMPEG_DIR` environment variable to the extracted folder:
-  ```
-  set FFMPEG_DIR=C:\path\to\ffmpeg
-  cargo build --profile opt-dev
-  ```
-  Ensure the FFmpeg `bin` directory is on your `PATH` at runtime so the DLLs are found.
+  1. **LLVM/Clang** — required by `bindgen` to generate FFmpeg bindings. Install and set the environment variable in PowerShell:
+     ```powershell
+     winget install LLVM.LLVM
+     [System.Environment]::SetEnvironmentVariable("LIBCLANG_PATH", "C:\Program Files\LLVM\bin", "User")
+     ```
+
+  2. **FFmpeg** — download the **shared** build from [ffmpeg.org/download](https://ffmpeg.org/download.html#build-windows) (links to gyan.dev), extract it (e.g. to `C:\ffmpeg`), then set environment variables in PowerShell:
+     ```powershell
+     [System.Environment]::SetEnvironmentVariable("FFMPEG_DIR", "C:\ffmpeg", "User")
+     # Add DLLs to PATH for runtime
+     $p = [System.Environment]::GetEnvironmentVariable("PATH", "User")
+     [System.Environment]::SetEnvironmentVariable("PATH", "$p;C:\ffmpeg\bin", "User")
+     ```
+
+  Restart your terminal after setting environment variables.
 
 ### Build
 
