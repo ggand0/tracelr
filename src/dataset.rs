@@ -257,7 +257,7 @@ fn load_episodes_v2(meta_dir: &Path, total_episodes: usize) -> Result<Vec<Episod
 
 /// Load episodes from v3.0 format (parquet files under meta/episodes/).
 fn load_episodes_v3(
-    root: &Path,
+    _root: &Path,
     meta_dir: &Path,
     video_keys: &[String],
     total_episodes: usize,
@@ -306,7 +306,7 @@ fn load_episodes_v3(
             .map_err(|e| format!("Read parquet {}: {}", pq_path.display(), e))?;
 
         let schema = reader.metadata().file_metadata().schema();
-        let has_field = |name: &str| schema.get_fields().iter().any(|f| f.name() == name);
+        let _has_field = |name: &str| schema.get_fields().iter().any(|f| f.name() == name);
 
         for row in reader.get_row_iter(None)
             .map_err(|e| format!("Row iter: {}", e))?

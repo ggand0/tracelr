@@ -31,12 +31,41 @@ Both formats are auto-detected from `meta/info.json`.
 
 ### Prerequisites
 
-- Rust toolchain (rustup)
-- FFmpeg development libraries:
+- Rust toolchain ([rustup](https://rustup.rs/))
+- FFmpeg development libraries and pkg-config:
+
+  **macOS (Homebrew)**
   ```
-  # Ubuntu/Debian
-  sudo apt install libavcodec-dev libavformat-dev libswscale-dev libavutil-dev
+  brew install pkgconf ffmpeg
   ```
+
+  **Ubuntu/Debian**
+  ```
+  sudo apt install pkg-config libavcodec-dev libavformat-dev libswscale-dev libavutil-dev
+  ```
+
+  **Fedora/RHEL**
+  ```
+  sudo dnf install pkgconf-pkg-config ffmpeg-free-devel
+  ```
+
+  **Windows**
+
+  1. **LLVM/Clang** — required by `bindgen` to generate FFmpeg bindings. Install and set the environment variable in PowerShell:
+     ```powershell
+     winget install LLVM.LLVM
+     [System.Environment]::SetEnvironmentVariable("LIBCLANG_PATH", "C:\Program Files\LLVM\bin", "User")
+     ```
+
+  2. **FFmpeg** — download the **shared** build from [ffmpeg.org/download](https://ffmpeg.org/download.html#build-windows) (links to gyan.dev), extract it (e.g. to `C:\ffmpeg`), then set environment variables in PowerShell:
+     ```powershell
+     [System.Environment]::SetEnvironmentVariable("FFMPEG_DIR", "C:\ffmpeg", "User")
+     # Add DLLs to PATH for runtime
+     $p = [System.Environment]::GetEnvironmentVariable("PATH", "User")
+     [System.Environment]::SetEnvironmentVariable("PATH", "$p;C:\ffmpeg\bin", "User")
+     ```
+
+  Restart your terminal after setting environment variables.
 
 ### Build
 

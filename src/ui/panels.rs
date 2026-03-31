@@ -44,6 +44,36 @@ impl App {
                 });
 
                 ui.menu_button("View", |ui| {
+                    let in_grid = self.grid_view.is_some();
+                    if ui.button(if in_grid { "Single View  [G]" } else { "Grid View  [G]" }).clicked() {
+                        ui.close_menu();
+                        self.toggle_grid_view(ctx);
+                    }
+                    ui.separator();
+                    ui.label(
+                        egui::RichText::new("Grid Size")
+                            .color(self.theme.muted)
+                            .small(),
+                    );
+                    if let Some((cols, rows)) = grid_size_picker(ui, self.grid_cols, self.grid_rows, self.theme.accent) {
+                        self.grid_cols = cols;
+                        self.grid_rows = rows;
+                        if !in_grid {
+                            self.toggle_grid_view(ctx);
+                        }
+                        if let Some(ds) = &self.dataset {
+                            let gds = crate::grid::GridDataset {
+                                video_paths: &self.video_paths,
+                                seek_ranges: &self.seek_ranges,
+                                episodes: &ds.episodes,
+                                fps: ds.info.fps,
+                            };
+                            if let Some(grid) = &mut self.grid_view {
+                                grid.resize(cols, rows, ctx, &gds);
+                            }
+                        }
+                    }
+                    ui.separator();
                     if ui
                         .checkbox(&mut self.show_cache_overlay, "Cache Overlay")
                         .changed()
@@ -89,10 +119,23 @@ impl App {
 
         let mut navigate_to = None;
 
+        // Determine which episodes are highlighted (single or grid range)
+        let grid_range = self.grid_view.as_ref().map(|g| {
+            let end = g.start_episode + g.pane_count();
+            g.start_episode..end
+        });
+
+        let should_scroll = self.scroll_to_selected;
+        let mut scroll_rect: Option<egui::Rect> = None;
+
         egui::ScrollArea::vertical().show(ui, |ui| {
             for ep in &ds.episodes {
                 let episode_index = ep.episode_index;
-                let is_selected = episode_index == self.current_episode;
+                let is_selected = if let Some(range) = &grid_range {
+                    range.contains(&episode_index)
+                } else {
+                    episode_index == self.current_episode
+                };
 
                 let annot_info = if self.annotate_mode {
                     self.annotations.get(episode_index).and_then(|idx| {
@@ -124,17 +167,38 @@ impl App {
                     ui.selectable_label(is_selected, &label_text)
                 });
 
+                // Accumulate rect of all selected items for scroll_to_rect
+                if should_scroll && is_selected {
+                    scroll_rect = Some(match scroll_rect {
+                        Some(r) => r.union(response.response.rect),
+                        None => response.response.rect,
+                    });
+                }
+
                 if response.inner.clicked() {
                     navigate_to = Some(episode_index);
                 }
             }
+
+            // Scroll to show all selected episodes
+            if let Some(rect) = scroll_rect {
+                ui.scroll_to_rect(rect, None);
+            }
         });
 
+        if should_scroll {
+            self.scroll_to_selected = false;
+        }
+
         if let Some(ep) = navigate_to {
-            if self.viewing_video {
-                self.exit_video_mode();
+            if self.grid_view.is_some() {
+                self.grid_jump_to(ep, ctx);
+            } else {
+                if self.viewing_video {
+                    self.exit_video_mode();
+                }
+                self.navigate_jump(ep, ctx);
             }
-            self.navigate_jump(ep, ctx);
         }
     }
 
@@ -537,5 +601,130 @@ impl App {
                 );
             });
         });
+    }
+
+    pub(crate) fn show_grid_display(&mut self, ui: &mut egui::Ui) {
+        let muted = self.theme.muted;
+        let accent = self.theme.accent;
+        if let Some(grid) = &mut self.grid_view {
+            grid.show(ui, muted, accent);
+        }
+    }
+
+    pub(crate) fn show_grid_footer(&self, ui: &mut egui::Ui) {
+        let font = egui::FontId::monospace(13.0);
+        let bright = egui::Color32::from_gray(200);
+        let dim = egui::Color32::from_gray(160);
+
+        ui.horizontal(|ui| {
+            if let Some(grid) = &self.grid_view {
+                let playing_icon = if grid.playing { "\u{23f8}" } else { "\u{25b6}" };
+                ui.label(
+                    egui::RichText::new(playing_icon)
+                        .font(font.clone())
+                        .color(bright),
+                );
+
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Grid {}x{}",
+                        grid.cols, grid.rows,
+                    ))
+                    .font(font.clone())
+                    .color(bright),
+                );
+
+                ui.separator();
+
+                let total = self.video_paths.len();
+                let end = (grid.start_episode + grid.pane_count()).min(total);
+                ui.label(
+                    egui::RichText::new(format!(
+                        "ep {}-{} / {}",
+                        grid.start_episode,
+                        end.saturating_sub(1),
+                        total,
+                    ))
+                    .font(font.clone())
+                    .color(dim),
+                );
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        egui::RichText::new("[G] exit  [+/-] resize  [←/→] page")
+                            .font(font.clone())
+                            .color(dim),
+                    );
+                });
+            }
+        });
+    }
+}
+
+/// Interactive grid size picker (like Google Docs table insertion).
+/// Displays a 4x4 mini grid. Hovering highlights from (1,1) to (col, row).
+/// Clicking returns the selected (cols, rows). Returns None if no click.
+fn grid_size_picker(
+    ui: &mut egui::Ui,
+    current_cols: usize,
+    current_rows: usize,
+    accent: egui::Color32,
+) -> Option<(usize, usize)> {
+    let max_cols = 10;
+    let max_rows = 10;
+    let cell_size = 10.0;
+    let cell_gap = 3.0;
+    let total_w = max_cols as f32 * (cell_size + cell_gap) - cell_gap;
+    let total_h = max_rows as f32 * (cell_size + cell_gap) - cell_gap;
+
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(total_w, total_h),
+        egui::Sense::click_and_drag(),
+    );
+
+    // Determine hover position → (hover_col, hover_row) 1-based
+    let (hover_col, hover_row) = if let Some(pos) = response.hover_pos() {
+        let rel = pos - rect.min;
+        let c = ((rel.x / (cell_size + cell_gap)).floor() as usize + 1).min(max_cols);
+        let r = ((rel.y / (cell_size + cell_gap)).floor() as usize + 1).min(max_rows);
+        (c, r)
+    } else {
+        (current_cols, current_rows)
+    };
+
+    // Draw cells
+    for row in 0..max_rows {
+        for col in 0..max_cols {
+            let x = rect.min.x + col as f32 * (cell_size + cell_gap);
+            let y = rect.min.y + row as f32 * (cell_size + cell_gap);
+            let cell_rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(cell_size, cell_size));
+
+            let in_selection = (col + 1) <= hover_col && (row + 1) <= hover_row;
+            let color = if in_selection {
+                accent
+            } else {
+                egui::Color32::from_gray(60)
+            };
+
+            ui.painter().rect_filled(cell_rect, 2.0, color);
+        }
+    }
+
+    // Label below
+    let label_pos = egui::pos2(rect.min.x, rect.max.y + 2.0);
+    ui.painter().text(
+        label_pos,
+        egui::Align2::LEFT_TOP,
+        format!("{}x{}", hover_col, hover_row),
+        egui::FontId::monospace(11.0),
+        egui::Color32::from_gray(180),
+    );
+    // Reserve space for the label
+    ui.allocate_exact_size(egui::vec2(total_w, 14.0), egui::Sense::hover());
+
+    if response.clicked() {
+        Some((hover_col, hover_row))
+    } else {
+        None
     }
 }

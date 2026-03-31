@@ -4,6 +4,7 @@ use eframe::egui;
 
 use crate::app::App;
 use crate::cache::{EpisodeCache, VideoPlayer};
+use crate::grid::{GridDataset, GridView};
 use crate::video;
 
 impl App {
@@ -63,15 +64,14 @@ impl App {
         let new_ep = if delta > 0 {
             (self.current_episode + delta as usize).min(total - 1)
         } else {
-            self.current_episode
-                .checked_sub((-delta) as usize)
-                .unwrap_or(0)
+            self.current_episode.saturating_sub((-delta) as usize)
         };
         if new_ep == self.current_episode {
             return;
         }
 
         self.current_episode = new_ep;
+        self.scroll_to_selected = true;
 
         // Show episode thumbnail immediately from cache (while video loads)
         if let Some(cache) = &mut self.episode_cache {
@@ -102,6 +102,7 @@ impl App {
         }
 
         self.current_episode = episode;
+        self.scroll_to_selected = true;
 
         if let Some(cache) = &mut self.episode_cache {
             cache.jump_to(episode, &self.video_paths, &self.seek_ranges);
@@ -273,5 +274,65 @@ impl App {
         }
 
         ctx.request_repaint();
+    }
+
+    /// Toggle between single-video and grid view.
+    pub(crate) fn toggle_grid_view(&mut self, ctx: &egui::Context) {
+        if self.grid_view.is_some() {
+            self.grid_view = None;
+            self.enter_video_mode(ctx);
+        } else {
+            self.exit_video_mode();
+            if let Some(ds) = &self.dataset {
+                let gds = GridDataset {
+                    video_paths: &self.video_paths,
+                    seek_ranges: &self.seek_ranges,
+                    episodes: &ds.episodes,
+                    fps: ds.info.fps,
+                };
+                let grid = GridView::new(ctx, self.grid_cols, self.grid_rows, self.current_episode, &gds);
+                self.grid_view = Some(grid);
+            }
+        }
+    }
+
+    /// Resize grid by delta steps. Grid sizes cycle through: 1x1, 2x2, 3x3, 4x4.
+    pub(crate) fn grid_resize(&mut self, delta: isize, ctx: &egui::Context) {
+        let current = self.grid_cols as isize;
+        let new_size = (current + delta).clamp(1, 10) as usize;
+        if new_size == self.grid_cols {
+            return;
+        }
+        self.grid_cols = new_size;
+        self.grid_rows = new_size;
+
+        if let Some(ds) = &self.dataset {
+            let gds = GridDataset {
+                video_paths: &self.video_paths,
+                seek_ranges: &self.seek_ranges,
+                episodes: &ds.episodes,
+                fps: ds.info.fps,
+            };
+            if let Some(grid) = &mut self.grid_view {
+                grid.resize(new_size, new_size, ctx, &gds);
+            }
+        }
+    }
+
+    /// Jump the grid to start at a specific episode.
+    pub(crate) fn grid_jump_to(&mut self, episode: usize, ctx: &egui::Context) {
+        if let Some(ds) = &self.dataset {
+            let gds = GridDataset {
+                video_paths: &self.video_paths,
+                seek_ranges: &self.seek_ranges,
+                episodes: &ds.episodes,
+                fps: ds.info.fps,
+            };
+            if let Some(grid) = &mut self.grid_view {
+                grid.jump_to(episode, ctx, &gds);
+            }
+        }
+        self.current_episode = episode;
+        self.scroll_to_selected = true;
     }
 }
