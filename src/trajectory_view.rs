@@ -133,7 +133,7 @@ pub(crate) fn show_trajectory_3d(
 
     // --- Ground plane grid ---
     // Snapped to nice step boundaries so the grid forms a clean rectangle
-    let grid_color = egui::Color32::from_rgba_premultiplied(255, 255, 255, 22);
+    let grid_color = egui::Color32::from_rgb(20, 75, 82);
     let pad = 0.03;
     let grid_step = nice_grid_step(((max[0] - min[0] + 2.0 * pad).max(max[1] - min[1] + 2.0 * pad)));
 
@@ -162,14 +162,6 @@ pub(crate) fn show_trajectory_3d(
             painter.line_segment([p0, p1], egui::Stroke::new(1.0, grid_color));
             x += grid_step;
         }
-    }
-
-    // --- Shadow projection (trajectory projected onto ground plane) ---
-    let shadow_color = egui::Color32::from_rgb(15, 60, 65);
-    for i in 0..n - 1 {
-        let p0 = camera.project([positions[i][0], positions[i][1], ground_z], center, rect);
-        let p1 = camera.project([positions[i + 1][0], positions[i + 1][1], ground_z], center, rect);
-        painter.line_segment([p0, p1], egui::Stroke::new(1.0, shadow_color));
     }
 
     // --- Drop lines from trajectory to ground (sampled) ---
