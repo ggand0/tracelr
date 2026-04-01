@@ -184,9 +184,9 @@ pub(crate) fn show_trajectory_overlay(
 
     // Dim color for unselected trajectories
     let dim_color = egui::Color32::from_rgb(
-        accent_color.r() / 5,
-        accent_color.g() / 5,
-        accent_color.b() / 5,
+        accent_color.r() / 3,
+        accent_color.g() / 3,
+        accent_color.b() / 3,
     );
 
     // --- Draw unselected trajectories first (behind) ---

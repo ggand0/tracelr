@@ -255,7 +255,11 @@ impl GridView {
             let response = ui.allocate_rect(rect, egui::Sense::click());
 
             if response.clicked() {
-                self.selected_pane = Some(idx);
+                if self.selected_pane == Some(idx) {
+                    self.selected_pane = None; // toggle off
+                } else {
+                    self.selected_pane = Some(idx);
+                }
             }
 
             // Background
