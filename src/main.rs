@@ -12,6 +12,8 @@ mod grid;
 mod perf;
 mod playback;
 mod theme;
+mod trajectory;
+mod trajectory_view;
 mod ui;
 mod video;
 

@@ -13,6 +13,7 @@ impl App {
         }
 
         let mut g_pressed = false;
+        let mut t_pressed = false;
         let mut enter_pressed = false;
         let mut escape_pressed = false;
         let mut space_pressed = false;
@@ -21,6 +22,7 @@ impl App {
 
         ctx.input(|i| {
             g_pressed = i.key_pressed(egui::Key::G);
+            t_pressed = i.key_pressed(egui::Key::T);
             enter_pressed = i.key_pressed(egui::Key::Enter);
             escape_pressed = i.key_pressed(egui::Key::Escape);
             space_pressed = i.key_pressed(egui::Key::Space);
@@ -53,6 +55,12 @@ impl App {
         // G toggles grid view
         if g_pressed {
             self.toggle_grid_view(ctx);
+            return;
+        }
+
+        // T toggles trajectory panel
+        if t_pressed && self.robot_kinematics.is_some() {
+            self.show_trajectory = !self.show_trajectory;
             return;
         }
 

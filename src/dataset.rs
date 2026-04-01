@@ -22,6 +22,9 @@ pub(crate) struct DatasetInfo {
     pub video_path_template: String,
     pub chunks_size: usize,
     pub codebase_version: String,
+    pub robot_type: Option<String>,
+    /// Joint/state feature names from observation.state (e.g. ["shoulder_pan.pos", ...])
+    pub state_names: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -55,6 +58,8 @@ pub(crate) struct TaskMeta {
 struct RawInfo {
     #[serde(default)]
     codebase_version: Option<String>,
+    #[serde(default)]
+    robot_type: Option<String>,
     fps: u32,
     total_episodes: usize,
     total_frames: usize,
@@ -63,9 +68,11 @@ struct RawInfo {
     features: Option<HashMap<String, RawFeature>>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 struct RawFeature {
     dtype: String,
+    #[serde(default)]
+    names: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -117,6 +124,14 @@ impl LeRobotDataset {
             })
             .unwrap_or_default();
 
+        // Extract state feature names (e.g. ["shoulder_pan.pos", ...])
+        let state_names = raw_info
+            .features
+            .as_ref()
+            .and_then(|feats| feats.get("observation.state"))
+            .and_then(|f| f.names.clone())
+            .unwrap_or_default();
+
         let info = DatasetInfo {
             fps: raw_info.fps,
             total_episodes: raw_info.total_episodes,
@@ -128,6 +143,8 @@ impl LeRobotDataset {
             }),
             chunks_size: raw_info.chunks_size.unwrap_or(1000),
             codebase_version: codebase_version.clone(),
+            robot_type: raw_info.robot_type,
+            state_names,
         };
 
         // Load episodes — v3.0 uses parquet, v2.1 uses jsonl

@@ -1,6 +1,7 @@
 use eframe::egui;
 
 use crate::app::App;
+use crate::trajectory;
 
 impl App {
     pub(crate) fn show_menu_bar(&mut self, ctx: &egui::Context) {
@@ -74,6 +75,14 @@ impl App {
                         }
                     }
                     ui.separator();
+                    if self.robot_kinematics.is_some() {
+                        if ui
+                            .checkbox(&mut self.show_trajectory, "EE Trajectory")
+                            .changed()
+                        {
+                            ui.close_menu();
+                        }
+                    }
                     if ui
                         .checkbox(&mut self.show_cache_overlay, "Cache Overlay")
                         .changed()
@@ -263,6 +272,12 @@ impl App {
         if self.annotate_mode {
             ui.add_space(16.0);
             self.show_annotation_panel(ui);
+        }
+
+        // Trajectory view in single-view mode
+        if self.show_trajectory && self.robot_kinematics.is_some() {
+            ui.add_space(16.0);
+            self.show_trajectory_panel(ui);
         }
     }
 
@@ -650,14 +665,105 @@ impl App {
                 );
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let hint = if self.robot_kinematics.is_some() {
+                        "[G] exit  [T] trajectory  [+/-] resize  [←/→] page"
+                    } else {
+                        "[G] exit  [+/-] resize  [←/→] page"
+                    };
                     ui.label(
-                        egui::RichText::new("[G] exit  [+/-] resize  [←/→] page")
+                        egui::RichText::new(hint)
                             .font(font.clone())
                             .color(dim),
                     );
                 });
             }
         });
+    }
+
+    pub(crate) fn show_trajectory_panel(&mut self, ui: &mut egui::Ui) {
+        let selected_episode = self
+            .grid_view
+            .as_ref()
+            .and_then(|g| g.selected_episode());
+
+        ui.label(
+            egui::RichText::new("EE Trajectory")
+                .strong()
+                .color(self.theme.heading),
+        );
+        ui.separator();
+
+        let ep_idx = match selected_episode {
+            Some(idx) => idx,
+            None => {
+                // No pane selected — show trajectory for the single-view episode
+                // or show a hint to select a pane
+                if self.grid_view.is_some() {
+                    ui.label(
+                        egui::RichText::new("Click a grid pane to view its trajectory")
+                            .color(self.theme.muted),
+                    );
+                    return;
+                }
+                self.current_episode
+            }
+        };
+
+        let ds = match &self.dataset {
+            Some(ds) => ds,
+            None => return,
+        };
+
+        let kin = match &self.robot_kinematics {
+            Some(k) => k,
+            None => return,
+        };
+
+        // Check cache first; if miss, compute and insert
+        if self.trajectory_cache.get(ep_idx).is_none() {
+            let parquet_path = trajectory::episode_data_path(
+                &ds.root,
+                ep_idx,
+                ds.info.chunks_size,
+            );
+            match trajectory::load_episode_states(&parquet_path) {
+                Ok(states) => {
+                    let traj = kin.compute_trajectory(&states);
+                    log::debug!(
+                        "Computed trajectory for ep {}: {} points",
+                        ep_idx,
+                        traj.positions.len(),
+                    );
+                    self.trajectory_cache.insert(ep_idx, traj);
+                }
+                Err(e) => {
+                    ui.label(
+                        egui::RichText::new(format!("Error loading ep {}: {}", ep_idx, e))
+                            .color(egui::Color32::from_rgb(255, 100, 100)),
+                    );
+                    return;
+                }
+            }
+        }
+
+        // Episode label
+        ui.label(
+            egui::RichText::new(format!("Episode {}", ep_idx))
+                .monospace()
+                .color(self.theme.muted),
+        );
+        ui.add_space(4.0);
+
+        // Draw the 3D trajectory
+        if let Some(traj) = self.trajectory_cache.get(ep_idx) {
+            let traj = traj.clone(); // clone to avoid borrow conflict with orbit_camera
+            crate::trajectory_view::show_trajectory_3d(
+                ui,
+                &traj,
+                &mut self.orbit_camera,
+                self.theme.accent,
+            );
+        }
     }
 }
 
