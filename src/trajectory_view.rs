@@ -133,8 +133,7 @@ pub(crate) fn show_trajectory_3d(
 
     // --- Ground plane grid ---
     // Grid spans the XY bounding box at z = ground_z, with some padding
-    // Dark teal — same hue family as accent, visible but not distracting
-    let grid_color = egui::Color32::from_rgb(15, 60, 65);
+    let grid_color = egui::Color32::from_rgba_premultiplied(255, 255, 255, 22);
     let pad = 0.03; // 3cm padding around trajectory extent
     let gx0 = min[0] - pad;
     let gx1 = max[0] + pad;
@@ -170,7 +169,7 @@ pub(crate) fn show_trajectory_3d(
     }
 
     // --- Shadow projection (trajectory projected onto ground plane) ---
-    let shadow_color = egui::Color32::from_rgba_premultiplied(255, 255, 255, 18);
+    let shadow_color = egui::Color32::from_rgb(15, 60, 65);
     for i in 0..n - 1 {
         let p0 = camera.project([positions[i][0], positions[i][1], ground_z], center, rect);
         let p1 = camera.project([positions[i + 1][0], positions[i + 1][1], ground_z], center, rect);
