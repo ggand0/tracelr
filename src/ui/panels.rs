@@ -681,10 +681,17 @@ impl App {
     }
 
     pub(crate) fn show_trajectory_panel(&mut self, ui: &mut egui::Ui) {
-        let selected_episode = self
-            .grid_view
-            .as_ref()
-            .and_then(|g| g.selected_episode());
+        let (selected_episode, live_frame) = if let Some(grid) = &self.grid_view {
+            (grid.selected_episode(), grid.selected_pane_frame())
+        } else {
+            // Single-view: use current episode and frame
+            let frame = if self.viewing_video {
+                Some(self.current_frame.saturating_sub(self.episode_start_frame))
+            } else {
+                None
+            };
+            (Some(self.current_episode), frame)
+        };
 
         ui.label(
             egui::RichText::new("EE Trajectory")
@@ -696,16 +703,11 @@ impl App {
         let ep_idx = match selected_episode {
             Some(idx) => idx,
             None => {
-                // No pane selected — show trajectory for the single-view episode
-                // or show a hint to select a pane
-                if self.grid_view.is_some() {
-                    ui.label(
-                        egui::RichText::new("Click a grid pane to view its trajectory")
-                            .color(self.theme.muted),
-                    );
-                    return;
-                }
-                self.current_episode
+                ui.label(
+                    egui::RichText::new("Click a grid pane to view its trajectory")
+                        .color(self.theme.muted),
+                );
+                return;
             }
         };
 
@@ -754,7 +756,7 @@ impl App {
         );
         ui.add_space(4.0);
 
-        // Draw the 3D trajectory
+        // Draw the 3D trajectory with live playhead
         if let Some(traj) = self.trajectory_cache.get(ep_idx) {
             let traj = traj.clone(); // clone to avoid borrow conflict with orbit_camera
             crate::trajectory_view::show_trajectory_3d(
@@ -762,6 +764,7 @@ impl App {
                 &traj,
                 &mut self.orbit_camera,
                 self.theme.accent,
+                live_frame,
             );
         }
     }

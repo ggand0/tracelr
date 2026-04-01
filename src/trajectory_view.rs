@@ -54,12 +54,15 @@ impl OrbitCamera {
 }
 
 /// Render the EE trajectory as a 3D projected line in the given UI area.
+/// `current_frame` is the playback position (0-based) — if Some, draws a live
+/// marker and dims the future portion of the trajectory.
 /// Returns true if the camera was interacted with (drag/scroll).
 pub(crate) fn show_trajectory_3d(
     ui: &mut egui::Ui,
     trajectory: &EeTrajectory,
     camera: &mut OrbitCamera,
     accent_color: egui::Color32,
+    current_frame: Option<usize>,
 ) -> bool {
     let available = ui.available_size();
     let (response, painter) =
@@ -148,33 +151,51 @@ pub(crate) fn show_trajectory_3d(
         }
     }
 
-    // Draw trajectory line segments with time-based color gradient
+    // Draw trajectory line segments
     let n = positions.len();
     if n < 2 {
         return interacted;
     }
 
+    let playhead = current_frame.unwrap_or(n - 1).min(n - 1);
+
     for i in 0..n - 1 {
-        let t = i as f32 / (n - 1) as f32;
         let p0 = camera.project(positions[i], center, rect);
         let p1 = camera.project(positions[i + 1], center, rect);
 
-        // Color gradient: accent color with varying alpha/brightness
-        let r = lerp_u8(80, accent_color.r(), t);
-        let g = lerp_u8(80, accent_color.g(), t);
-        let b = lerp_u8(80, accent_color.b(), t);
-        let color = egui::Color32::from_rgb(r, g, b);
+        let past = i < playhead;
+        let t = i as f32 / (n - 1) as f32;
 
-        painter.line_segment([p0, p1], egui::Stroke::new(1.5, color));
+        let (color, width) = if past {
+            // Past: bright gradient from dim to accent
+            let r = lerp_u8(80, accent_color.r(), t);
+            let g = lerp_u8(80, accent_color.g(), t);
+            let b = lerp_u8(80, accent_color.b(), t);
+            (egui::Color32::from_rgb(r, g, b), 2.0)
+        } else {
+            // Future: dim trail
+            (egui::Color32::from_gray(50), 1.0)
+        };
+
+        painter.line_segment([p0, p1], egui::Stroke::new(width, color));
     }
 
-    // Draw start point (bright) and end point (accent)
+    // Start marker
     let start_pt = camera.project(positions[0], center, rect);
-    let end_pt = camera.project(positions[n - 1], center, rect);
-    painter.circle_filled(start_pt, 4.0, egui::Color32::from_rgb(100, 100, 100));
-    painter.circle_filled(end_pt, 4.0, accent_color);
+    painter.circle_filled(start_pt, 3.0, egui::Color32::from_gray(100));
 
-    // Label: EE span
+    // Current position marker (bright, larger)
+    let current_pt = camera.project(positions[playhead], center, rect);
+    painter.circle_filled(current_pt, 5.0, egui::Color32::WHITE);
+    painter.circle_stroke(current_pt, 7.0, egui::Stroke::new(1.5, accent_color));
+
+    // End marker (only if playback is at the end or no live tracking)
+    if current_frame.is_none() || playhead == n - 1 {
+        let end_pt = camera.project(positions[n - 1], center, rect);
+        painter.circle_filled(end_pt, 4.0, accent_color);
+    }
+
+    // Labels
     let span_text = format!(
         "dx={:.0}mm dy={:.0}mm dz={:.0}mm",
         (max[0] - min[0]) * 1000.0,
@@ -188,6 +209,23 @@ pub(crate) fn show_trajectory_3d(
         egui::FontId::monospace(10.0),
         egui::Color32::from_gray(140),
     );
+
+    // Frame counter when live tracking
+    if current_frame.is_some() {
+        let pos = positions[playhead];
+        let frame_text = format!(
+            "f{}/{} ({:.0},{:.0},{:.0})mm",
+            playhead + 1, n,
+            pos[0] * 1000.0, pos[1] * 1000.0, pos[2] * 1000.0,
+        );
+        painter.text(
+            egui::pos2(rect.min.x + 6.0, rect.min.y + 16.0),
+            egui::Align2::LEFT_TOP,
+            &frame_text,
+            egui::FontId::monospace(10.0),
+            egui::Color32::from_gray(180),
+        );
+    }
 
     interacted
 }

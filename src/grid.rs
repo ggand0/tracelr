@@ -311,8 +311,14 @@ impl GridView {
     }
 
     /// Get the episode index of the selected pane.
-    #[allow(dead_code)]
     pub fn selected_episode(&self) -> Option<usize> {
         self.selected_pane.and_then(|idx| self.panes.get(idx).map(|p| p.episode_index))
+    }
+
+    /// Get the current frame (relative to episode start) of the selected pane.
+    pub fn selected_pane_frame(&self) -> Option<usize> {
+        self.selected_pane.and_then(|idx| {
+            self.panes.get(idx).map(|p| p.current_frame.saturating_sub(p.episode_start_frame))
+        })
     }
 }
