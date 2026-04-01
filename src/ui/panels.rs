@@ -2,6 +2,7 @@ use eframe::egui;
 
 use crate::app::App;
 use crate::trajectory;
+use crate::trajectory_view::TrajectoryEntry;
 
 impl App {
     pub(crate) fn show_menu_bar(&mut self, ctx: &egui::Context) {
@@ -681,35 +682,12 @@ impl App {
     }
 
     pub(crate) fn show_trajectory_panel(&mut self, ui: &mut egui::Ui) {
-        let (selected_episode, live_frame) = if let Some(grid) = &self.grid_view {
-            (grid.selected_episode(), grid.selected_pane_frame())
-        } else {
-            // Single-view: use current episode and frame
-            let frame = if self.viewing_video {
-                Some(self.current_frame.saturating_sub(self.episode_start_frame))
-            } else {
-                None
-            };
-            (Some(self.current_episode), frame)
-        };
-
         ui.label(
             egui::RichText::new("EE Trajectory")
                 .strong()
                 .color(self.theme.heading),
         );
         ui.separator();
-
-        let ep_idx = match selected_episode {
-            Some(idx) => idx,
-            None => {
-                ui.label(
-                    egui::RichText::new("Click a grid pane to view its trajectory")
-                        .color(self.theme.muted),
-                );
-                return;
-            }
-        };
 
         let ds = match &self.dataset {
             Some(ds) => ds,
@@ -721,8 +699,29 @@ impl App {
             None => return,
         };
 
-        // Check cache first; if miss, compute and insert
-        if self.trajectory_cache.get(ep_idx).is_none() {
+        // Collect episode indices + frames to display
+        let (pane_episodes, selected_episode) = if let Some(grid) = &self.grid_view {
+            let all = grid.all_pane_episodes();
+            let sel = grid.selected_episode();
+            (all, sel)
+        } else {
+            let frame = if self.viewing_video {
+                self.current_frame.saturating_sub(self.episode_start_frame)
+            } else {
+                0
+            };
+            (vec![(self.current_episode, frame)], Some(self.current_episode))
+        };
+
+        if pane_episodes.is_empty() {
+            return;
+        }
+
+        // Ensure all trajectories are cached
+        for &(ep_idx, _) in &pane_episodes {
+            if self.trajectory_cache.get(ep_idx).is_some() {
+                continue;
+            }
             let parquet_path = trajectory::episode_data_path(
                 &ds.root,
                 ep_idx,
@@ -739,34 +738,56 @@ impl App {
                     self.trajectory_cache.insert(ep_idx, traj);
                 }
                 Err(e) => {
-                    ui.label(
-                        egui::RichText::new(format!("Error loading ep {}: {}", ep_idx, e))
-                            .color(egui::Color32::from_rgb(255, 100, 100)),
-                    );
-                    return;
+                    log::warn!("Failed to load trajectory for ep {}: {}", ep_idx, e);
                 }
             }
         }
 
-        // Episode label
-        ui.label(
-            egui::RichText::new(format!("Episode {}", ep_idx))
-                .monospace()
-                .color(self.theme.muted),
-        );
-        ui.add_space(4.0);
+        // Build overlay entries
+        let mut entries: Vec<TrajectoryEntry> = Vec::new();
+        for &(ep_idx, frame) in &pane_episodes {
+            if let Some(traj) = self.trajectory_cache.get(ep_idx) {
+                entries.push(TrajectoryEntry {
+                    trajectory: traj.clone(),
+                    episode_index: ep_idx,
+                    current_frame: frame,
+                    selected: selected_episode == Some(ep_idx),
+                });
+            }
+        }
 
-        // Draw the 3D trajectory with live playhead
-        if let Some(traj) = self.trajectory_cache.get(ep_idx) {
-            let traj = traj.clone(); // clone to avoid borrow conflict with orbit_camera
-            crate::trajectory_view::show_trajectory_3d(
-                ui,
-                &traj,
-                &mut self.orbit_camera,
-                self.theme.accent,
-                live_frame,
+        if entries.is_empty() {
+            return;
+        }
+
+        // Label
+        if self.grid_view.is_some() {
+            let sel_text = match selected_episode {
+                Some(ep) => format!("Selected: ep {}", ep),
+                None => "No selection".to_string(),
+            };
+            ui.label(
+                egui::RichText::new(sel_text)
+                    .monospace()
+                    .color(self.theme.muted),
+            );
+        } else {
+            ui.label(
+                egui::RichText::new(format!("Episode {}", self.current_episode))
+                    .monospace()
+                    .color(self.theme.muted),
             );
         }
+        ui.add_space(4.0);
+
+        // Draw overlay
+        let accent = self.theme.accent;
+        crate::trajectory_view::show_trajectory_overlay(
+            ui,
+            &entries,
+            &mut self.orbit_camera,
+            accent,
+        );
     }
 }
 

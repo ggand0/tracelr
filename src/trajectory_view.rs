@@ -24,45 +24,44 @@ impl Default for OrbitCamera {
 
 impl OrbitCamera {
     /// Project a 3D point [x, y, z] to 2D screen coordinates within the given rect.
-    /// Uses orthographic projection with orbit rotation.
     fn project(&self, point: [f64; 3], center: [f64; 3], rect: egui::Rect) -> egui::Pos2 {
-        // Translate to center
         let px = point[0] - center[0];
         let py = point[1] - center[1];
         let pz = point[2] - center[2];
 
-        // Rotate by azimuth (around Z axis — up in robot frame)
         let cos_a = self.azimuth.cos() as f64;
         let sin_a = self.azimuth.sin() as f64;
         let rx = px * cos_a - py * sin_a;
         let ry = px * sin_a + py * cos_a;
         let rz = pz;
 
-        // Rotate by elevation (tilt around the resulting X axis)
         let cos_e = self.elevation.cos() as f64;
         let sin_e = self.elevation.sin() as f64;
-        let _fy = ry * cos_e - rz * sin_e;
         let fz = ry * sin_e + rz * cos_e;
 
-        // Orthographic projection: use rx as screen X, fz as screen Y (up)
         let scale = self.zoom * rect.width().min(rect.height()) * 0.4;
         let screen_x = rect.center().x + (rx as f32) * scale;
-        let screen_y = rect.center().y - (fz as f32) * scale; // flip Y (screen Y is down)
+        let screen_y = rect.center().y - (fz as f32) * scale;
 
         egui::pos2(screen_x, screen_y)
     }
 }
 
-/// Render the EE trajectory as a 3D projected line in the given UI area.
-/// `current_frame` is the playback position (0-based) — if Some, draws a live
-/// marker and dims the future portion of the trajectory.
-/// Returns true if the camera was interacted with (drag/scroll).
-pub(crate) fn show_trajectory_3d(
+/// A trajectory entry for the overlay view.
+pub(crate) struct TrajectoryEntry {
+    pub trajectory: EeTrajectory,
+    pub episode_index: usize,
+    pub current_frame: usize,
+    pub selected: bool,
+}
+
+/// Render multiple EE trajectories overlaid in one 3D view.
+/// Selected entries are drawn bright with playhead; others are dimmed.
+pub(crate) fn show_trajectory_overlay(
     ui: &mut egui::Ui,
-    trajectory: &EeTrajectory,
+    entries: &[TrajectoryEntry],
     camera: &mut OrbitCamera,
     accent_color: egui::Color32,
-    current_frame: Option<usize>,
 ) -> bool {
     let available = ui.available_size();
     let (response, painter) =
@@ -89,61 +88,53 @@ pub(crate) fn show_trajectory_3d(
         }
     }
 
-    let positions = &trajectory.positions;
-    if positions.is_empty() {
+    if entries.is_empty() {
         return interacted;
     }
 
-    // Compute bounding box center for centering the view
+    // Compute bounding box across ALL trajectories
     let mut min = [f64::MAX; 3];
     let mut max = [f64::MIN; 3];
-    for p in positions {
-        for i in 0..3 {
-            min[i] = min[i].min(p[i]);
-            max[i] = max[i].max(p[i]);
+    for entry in entries {
+        for p in &entry.trajectory.positions {
+            for i in 0..3 {
+                min[i] = min[i].min(p[i]);
+                max[i] = max[i].max(p[i]);
+            }
         }
     }
+    // Guard against empty/degenerate bounds
+    if min[0] > max[0] {
+        return interacted;
+    }
+
     let center = [
         (min[0] + max[0]) * 0.5,
         (min[1] + max[1]) * 0.5,
         (min[2] + max[2]) * 0.5,
     ];
 
-    // Auto-zoom to fit the trajectory extent
+    // Auto-zoom to fit
     let extent = ((max[0] - min[0]).powi(2) + (max[1] - min[1]).powi(2) + (max[2] - min[2]).powi(2)).sqrt();
-    if extent > 1e-6 {
-        let base_zoom = 1.0 / extent as f32;
-        // Only auto-set zoom on first render (when zoom is default 1.0)
-        // After that, user controls zoom via scroll
-        if (camera.zoom - 1.0).abs() < 0.001 {
-            camera.zoom = base_zoom;
-        }
+    if extent > 1e-6 && (camera.zoom - 1.0).abs() < 0.001 {
+        camera.zoom = 1.0 / extent as f32;
     }
 
     // Background
     painter.rect_filled(rect, 4.0, egui::Color32::from_gray(20));
 
-    let n = positions.len();
-    if n < 2 {
-        return interacted;
-    }
-
-    let playhead = current_frame.unwrap_or(n - 1).min(n - 1);
     let ground_z = min[2];
 
     // --- Ground plane grid ---
-    // Snapped to nice step boundaries so the grid forms a clean rectangle
     let grid_color = egui::Color32::from_rgb(20, 75, 82);
     let pad = 0.03;
-    let grid_step = nice_grid_step(((max[0] - min[0] + 2.0 * pad).max(max[1] - min[1] + 2.0 * pad)));
+    let grid_step = nice_grid_step((max[0] - min[0] + 2.0 * pad).max(max[1] - min[1] + 2.0 * pad));
 
-    // Snap all four edges outward to grid step
     let gx0 = ((min[0] - pad) / grid_step).floor() * grid_step;
     let gx1 = ((max[0] + pad) / grid_step).ceil() * grid_step;
     let gy0 = ((min[1] - pad) / grid_step).floor() * grid_step;
     let gy1 = ((max[1] + pad) / grid_step).ceil() * grid_step;
 
-    // X-parallel lines (varying Y) — all span full gx0..gx1
     {
         let mut y = gy0;
         while y <= gy1 + grid_step * 0.01 {
@@ -153,7 +144,6 @@ pub(crate) fn show_trajectory_3d(
             y += grid_step;
         }
     }
-    // Y-parallel lines (varying X) — all span full gy0..gy1
     {
         let mut x = gx0;
         while x <= gx1 + grid_step * 0.01 {
@@ -164,36 +154,15 @@ pub(crate) fn show_trajectory_3d(
         }
     }
 
-    // --- Drop lines from trajectory to ground (sampled) ---
-    let drop_color = egui::Color32::from_gray(40);
-    let drop_interval = (n / 20).max(1); // ~20 drop lines across the episode
-    for i in (0..n).step_by(drop_interval) {
-        let top = camera.project(positions[i], center, rect);
-        let bot = camera.project([positions[i][0], positions[i][1], ground_z], center, rect);
-        // Dashed: draw only if the height difference is visible
-        let dist = ((top.x - bot.x).powi(2) + (top.y - bot.y).powi(2)).sqrt();
-        if dist > 3.0 {
-            painter.line_segment([top, bot], egui::Stroke::new(0.5, drop_color));
-        }
-    }
-    // Always draw a drop line at the playhead
-    {
-        let top = camera.project(positions[playhead], center, rect);
-        let bot = camera.project([positions[playhead][0], positions[playhead][1], ground_z], center, rect);
-        painter.line_segment([top, bot], egui::Stroke::new(1.0, egui::Color32::from_gray(70)));
-        // Shadow dot at playhead ground position
-        painter.circle_filled(bot, 3.0, egui::Color32::from_gray(60));
-    }
-
     // --- Axis indicator (bottom-left corner) ---
     let axis_origin = egui::pos2(rect.min.x + 30.0, rect.max.y - 30.0);
     let axis_len = 20.0;
     {
         let unit_pts = [[0.15, 0.0, 0.0], [0.0, 0.15, 0.0], [0.0, 0.0, 0.15]];
         let colors = [
-            egui::Color32::from_rgb(220, 60, 60),   // X = red
-            egui::Color32::from_rgb(60, 180, 60),    // Y = green
-            egui::Color32::from_rgb(60, 100, 220),   // Z = blue
+            egui::Color32::from_rgb(220, 60, 60),
+            egui::Color32::from_rgb(60, 180, 60),
+            egui::Color32::from_rgb(60, 100, 220),
         ];
         let labels = ["X", "Y", "Z"];
         let axis_rect = egui::Rect::from_center_size(axis_origin, egui::vec2(100.0, 100.0));
@@ -213,43 +182,111 @@ pub(crate) fn show_trajectory_3d(
         }
     }
 
-    // --- Trajectory line segments ---
-    // Dim version of accent for the future portion
+    // Dim color for unselected trajectories
+    let dim_color = egui::Color32::from_rgb(
+        accent_color.r() / 5,
+        accent_color.g() / 5,
+        accent_color.b() / 5,
+    );
+
+    // --- Draw unselected trajectories first (behind) ---
+    for entry in entries {
+        if entry.selected {
+            continue;
+        }
+        let positions = &entry.trajectory.positions;
+        let n = positions.len();
+        if n < 2 {
+            continue;
+        }
+        for i in 0..n - 1 {
+            let p0 = camera.project(positions[i], center, rect);
+            let p1 = camera.project(positions[i + 1], center, rect);
+            painter.line_segment([p0, p1], egui::Stroke::new(1.0, dim_color));
+        }
+    }
+
+    // --- Draw selected trajectories on top ---
     let dim_accent = egui::Color32::from_rgb(
         accent_color.r() / 4,
         accent_color.g() / 4,
         accent_color.b() / 4,
     );
-    for i in 0..n - 1 {
-        let p0 = camera.project(positions[i], center, rect);
-        let p1 = camera.project(positions[i + 1], center, rect);
 
-        let (color, width) = if i < playhead {
-            (accent_color, 2.0)
-        } else {
-            (dim_accent, 1.0)
-        };
+    for entry in entries {
+        if !entry.selected {
+            continue;
+        }
+        let positions = &entry.trajectory.positions;
+        let n = positions.len();
+        if n < 2 {
+            continue;
+        }
 
-        painter.line_segment([p0, p1], egui::Stroke::new(width, color));
+        let playhead = entry.current_frame.min(n - 1);
+
+        // Drop lines (only for selected)
+        let drop_color = egui::Color32::from_gray(40);
+        let drop_interval = (n / 20).max(1);
+        for i in (0..n).step_by(drop_interval) {
+            let top = camera.project(positions[i], center, rect);
+            let bot = camera.project([positions[i][0], positions[i][1], ground_z], center, rect);
+            let dist = ((top.x - bot.x).powi(2) + (top.y - bot.y).powi(2)).sqrt();
+            if dist > 3.0 {
+                painter.line_segment([top, bot], egui::Stroke::new(0.5, drop_color));
+            }
+        }
+        // Playhead drop line
+        {
+            let top = camera.project(positions[playhead], center, rect);
+            let bot = camera.project([positions[playhead][0], positions[playhead][1], ground_z], center, rect);
+            painter.line_segment([top, bot], egui::Stroke::new(1.0, egui::Color32::from_gray(70)));
+            painter.circle_filled(bot, 3.0, egui::Color32::from_gray(60));
+        }
+
+        // Trajectory line
+        for i in 0..n - 1 {
+            let p0 = camera.project(positions[i], center, rect);
+            let p1 = camera.project(positions[i + 1], center, rect);
+            let (color, width) = if i < playhead {
+                (accent_color, 2.0)
+            } else {
+                (dim_accent, 1.0)
+            };
+            painter.line_segment([p0, p1], egui::Stroke::new(width, color));
+        }
+
+        // Markers
+        let start_pt = camera.project(positions[0], center, rect);
+        painter.circle_filled(start_pt, 3.0, egui::Color32::from_gray(100));
+
+        let current_pt = camera.project(positions[playhead], center, rect);
+        painter.circle_filled(current_pt, 5.0, egui::Color32::WHITE);
+        painter.circle_stroke(current_pt, 7.0, egui::Stroke::new(1.5, accent_color));
+
+        if playhead == n - 1 {
+            let end_pt = camera.project(positions[n - 1], center, rect);
+            painter.circle_filled(end_pt, 4.0, accent_color);
+        }
+
+        // Frame counter label
+        let pos = positions[playhead];
+        let frame_text = format!(
+            "ep{} f{}/{} ({:.0},{:.0},{:.0})mm",
+            entry.episode_index,
+            playhead + 1, n,
+            pos[0] * 1000.0, pos[1] * 1000.0, pos[2] * 1000.0,
+        );
+        painter.text(
+            egui::pos2(rect.min.x + 6.0, rect.min.y + 16.0),
+            egui::Align2::LEFT_TOP,
+            &frame_text,
+            egui::FontId::monospace(10.0),
+            egui::Color32::from_gray(180),
+        );
     }
 
-    // --- Markers ---
-    // Start
-    let start_pt = camera.project(positions[0], center, rect);
-    painter.circle_filled(start_pt, 3.0, egui::Color32::from_gray(100));
-
-    // Current position (bright, larger)
-    let current_pt = camera.project(positions[playhead], center, rect);
-    painter.circle_filled(current_pt, 5.0, egui::Color32::WHITE);
-    painter.circle_stroke(current_pt, 7.0, egui::Stroke::new(1.5, accent_color));
-
-    // End (only when at end or no live tracking)
-    if current_frame.is_none() || playhead == n - 1 {
-        let end_pt = camera.project(positions[n - 1], center, rect);
-        painter.circle_filled(end_pt, 4.0, accent_color);
-    }
-
-    // --- Labels ---
+    // --- Global labels ---
     let span_text = format!(
         "dx={:.0}mm dy={:.0}mm dz={:.0}mm",
         (max[0] - min[0]) * 1000.0,
@@ -264,21 +301,15 @@ pub(crate) fn show_trajectory_3d(
         egui::Color32::from_gray(140),
     );
 
-    if current_frame.is_some() {
-        let pos = positions[playhead];
-        let frame_text = format!(
-            "f{}/{} ({:.0},{:.0},{:.0})mm",
-            playhead + 1, n,
-            pos[0] * 1000.0, pos[1] * 1000.0, pos[2] * 1000.0,
-        );
-        painter.text(
-            egui::pos2(rect.min.x + 6.0, rect.min.y + 16.0),
-            egui::Align2::LEFT_TOP,
-            &frame_text,
-            egui::FontId::monospace(10.0),
-            egui::Color32::from_gray(180),
-        );
-    }
+    // Episode count
+    let count_text = format!("{} episodes", entries.len());
+    painter.text(
+        egui::pos2(rect.max.x - 6.0, rect.min.y + 4.0),
+        egui::Align2::RIGHT_TOP,
+        &count_text,
+        egui::FontId::monospace(10.0),
+        egui::Color32::from_gray(100),
+    );
 
     interacted
 }

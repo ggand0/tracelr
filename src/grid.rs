@@ -321,4 +321,12 @@ impl GridView {
             self.panes.get(idx).map(|p| p.current_frame.saturating_sub(p.episode_start_frame))
         })
     }
+
+    /// Get all pane episode indices and their current frame (relative to episode start).
+    pub fn all_pane_episodes(&self) -> Vec<(usize, usize)> {
+        self.panes
+            .iter()
+            .map(|p| (p.episode_index, p.current_frame.saturating_sub(p.episode_start_frame)))
+            .collect()
+    }
 }
