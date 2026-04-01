@@ -132,35 +132,31 @@ pub(crate) fn show_trajectory_3d(
     let ground_z = min[2];
 
     // --- Ground plane grid ---
-    // Grid spans the XY bounding box at z = ground_z, with some padding
+    // Snapped to nice step boundaries so the grid forms a clean rectangle
     let grid_color = egui::Color32::from_rgba_premultiplied(255, 255, 255, 22);
-    let pad = 0.03; // 3cm padding around trajectory extent
-    let gx0 = min[0] - pad;
-    let gx1 = max[0] + pad;
-    let gy0 = min[1] - pad;
-    let gy1 = max[1] + pad;
+    let pad = 0.03;
+    let grid_step = nice_grid_step(((max[0] - min[0] + 2.0 * pad).max(max[1] - min[1] + 2.0 * pad)));
 
-    // Choose grid spacing: ~5-8 lines per axis
-    let grid_step = nice_grid_step((gx1 - gx0).max(gy1 - gy0));
+    // Snap all four edges outward to grid step
+    let gx0 = ((min[0] - pad) / grid_step).floor() * grid_step;
+    let gx1 = ((max[0] + pad) / grid_step).ceil() * grid_step;
+    let gy0 = ((min[1] - pad) / grid_step).floor() * grid_step;
+    let gy1 = ((max[1] + pad) / grid_step).ceil() * grid_step;
 
-    // Snap grid bounds to step
-    let gx_start = (gx0 / grid_step).floor() * grid_step;
-    let gy_start = (gy0 / grid_step).floor() * grid_step;
-
-    // Draw X-parallel lines (varying Y)
+    // X-parallel lines (varying Y) — all span full gx0..gx1
     {
-        let mut y = gy_start;
-        while y <= gy1 + grid_step * 0.5 {
+        let mut y = gy0;
+        while y <= gy1 + grid_step * 0.01 {
             let p0 = camera.project([gx0, y, ground_z], center, rect);
             let p1 = camera.project([gx1, y, ground_z], center, rect);
             painter.line_segment([p0, p1], egui::Stroke::new(1.0, grid_color));
             y += grid_step;
         }
     }
-    // Draw Y-parallel lines (varying X)
+    // Y-parallel lines (varying X) — all span full gy0..gy1
     {
-        let mut x = gx_start;
-        while x <= gx1 + grid_step * 0.5 {
+        let mut x = gx0;
+        while x <= gx1 + grid_step * 0.01 {
             let p0 = camera.project([x, gy0, ground_z], center, rect);
             let p1 = camera.project([x, gy1, ground_z], center, rect);
             painter.line_segment([p0, p1], egui::Stroke::new(1.0, grid_color));
