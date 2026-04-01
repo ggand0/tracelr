@@ -133,8 +133,9 @@ pub(crate) fn show_trajectory_3d(
 
     // --- Ground plane grid ---
     // Grid spans the XY bounding box at z = ground_z, with some padding
-    let grid_color = egui::Color32::from_gray(35);
-    let pad = 0.02; // 2cm padding around trajectory extent
+    // Dark teal — same hue family as accent, visible but not distracting
+    let grid_color = egui::Color32::from_rgb(15, 60, 65);
+    let pad = 0.03; // 3cm padding around trajectory extent
     let gx0 = min[0] - pad;
     let gx1 = max[0] + pad;
     let gy0 = min[1] - pad;
@@ -153,7 +154,7 @@ pub(crate) fn show_trajectory_3d(
         while y <= gy1 + grid_step * 0.5 {
             let p0 = camera.project([gx0, y, ground_z], center, rect);
             let p1 = camera.project([gx1, y, ground_z], center, rect);
-            painter.line_segment([p0, p1], egui::Stroke::new(0.5, grid_color));
+            painter.line_segment([p0, p1], egui::Stroke::new(1.0, grid_color));
             y += grid_step;
         }
     }
@@ -163,7 +164,7 @@ pub(crate) fn show_trajectory_3d(
         while x <= gx1 + grid_step * 0.5 {
             let p0 = camera.project([x, gy0, ground_z], center, rect);
             let p1 = camera.project([x, gy1, ground_z], center, rect);
-            painter.line_segment([p0, p1], egui::Stroke::new(0.5, grid_color));
+            painter.line_segment([p0, p1], egui::Stroke::new(1.0, grid_color));
             x += grid_step;
         }
     }
@@ -226,20 +227,20 @@ pub(crate) fn show_trajectory_3d(
     }
 
     // --- Trajectory line segments ---
+    // Dim version of accent for the future portion
+    let dim_accent = egui::Color32::from_rgb(
+        accent_color.r() / 4,
+        accent_color.g() / 4,
+        accent_color.b() / 4,
+    );
     for i in 0..n - 1 {
         let p0 = camera.project(positions[i], center, rect);
         let p1 = camera.project(positions[i + 1], center, rect);
 
-        let past = i < playhead;
-        let t = i as f32 / (n - 1) as f32;
-
-        let (color, width) = if past {
-            let r = lerp_u8(80, accent_color.r(), t);
-            let g = lerp_u8(80, accent_color.g(), t);
-            let b = lerp_u8(80, accent_color.b(), t);
-            (egui::Color32::from_rgb(r, g, b), 2.0)
+        let (color, width) = if i < playhead {
+            (accent_color, 2.0)
         } else {
-            (egui::Color32::from_gray(50), 1.0)
+            (dim_accent, 1.0)
         };
 
         painter.line_segment([p0, p1], egui::Stroke::new(width, color));
@@ -293,10 +294,6 @@ pub(crate) fn show_trajectory_3d(
     }
 
     interacted
-}
-
-fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
-    (a as f32 + (b as f32 - a as f32) * t).round() as u8
 }
 
 /// Pick a "nice" grid step so there are ~5-8 grid lines across the given span.
