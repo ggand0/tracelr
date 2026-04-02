@@ -724,14 +724,17 @@ impl App {
             if self.trajectory_cache.get(ep_idx).is_some() {
                 continue;
             }
+            let is_v3 = ds.info.codebase_version.starts_with("v3");
             let parquet_path = trajectory::episode_data_path(
                 &ds.root,
                 ep_idx,
                 ds.info.chunks_size,
+                &ds.info.codebase_version,
             );
-            match trajectory::load_episode_states(&parquet_path) {
+            let filter_ep = if is_v3 { Some(ep_idx) } else { None };
+            match trajectory::load_episode_states(&parquet_path, filter_ep) {
                 Ok(states) => {
-                    let traj = kin.compute_trajectory(&states);
+                    let traj = kin.compute_trajectory(&states, &self.state_pos_indices);
                     log::debug!(
                         "Computed trajectory for ep {}: {} points",
                         ep_idx,

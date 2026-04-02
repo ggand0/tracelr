@@ -58,6 +58,8 @@ pub struct App {
     pub(crate) trajectory_cache: TrajectoryCache,
     pub(crate) orbit_camera: OrbitCamera,
     pub(crate) show_trajectory: bool,
+    /// Indices into observation.state that are joint positions (for FK).
+    pub(crate) state_pos_indices: Vec<usize>,
 
     // Mode
     pub(crate) annotate_mode: bool,
@@ -105,6 +107,7 @@ impl App {
             trajectory_cache: TrajectoryCache::new(100),
             orbit_camera: OrbitCamera::default(),
             show_trajectory: true,
+            state_pos_indices: Vec::new(),
             annotate_mode: annotate,
             theme: UiTheme::teal_dark(),
             perf: PerfTracker::new(),
@@ -153,11 +156,14 @@ impl App {
                 // Try to load robot kinematics for EE trajectory visualization
                 self.robot_kinematics = None;
                 self.trajectory_cache = TrajectoryCache::new(100);
+                self.state_pos_indices = crate::trajectory::pos_indices_from_state_names(&ds.info.state_names);
+                log::info!("State pos indices: {:?} (from {} state names)", self.state_pos_indices, ds.info.state_names.len());
+
                 if let Some(urdf_path) = crate::trajectory::discover_urdf(
                     path,
                     ds.info.robot_type.as_deref(),
                 ) {
-                    match RobotKinematics::from_urdf(&urdf_path, "gripper_frame_link") {
+                    match RobotKinematics::from_urdf(&urdf_path, None) {
                         Ok(kin) => {
                             log::info!("Robot kinematics loaded: {} (DOF={})", urdf_path.display(), kin.dof());
                             self.robot_kinematics = Some(kin);
