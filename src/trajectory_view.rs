@@ -182,107 +182,102 @@ pub(crate) fn show_trajectory_overlay(
         }
     }
 
-    // Dim color for unselected trajectories — half brightness
+    let has_selection = entries.iter().any(|e| e.selected);
+
+    // Dimmed accent for unselected trajectories when something is selected
     let dim_color = egui::Color32::from_rgb(
         accent_color.r() / 2,
         accent_color.g() / 2,
         accent_color.b() / 2,
     );
-
-    // --- Draw unselected trajectories first (behind) ---
-    for entry in entries {
-        if entry.selected {
-            continue;
-        }
-        let positions = &entry.trajectory.positions;
-        let n = positions.len();
-        if n < 2 {
-            continue;
-        }
-        for i in 0..n - 1 {
-            let p0 = camera.project(positions[i], center, rect);
-            let p1 = camera.project(positions[i + 1], center, rect);
-            painter.line_segment([p0, p1], egui::Stroke::new(1.0, dim_color));
-        }
-    }
-
-    // --- Draw selected trajectories on top ---
-    let dim_accent = egui::Color32::from_rgb(
-        accent_color.r() / 4,
-        accent_color.g() / 4,
-        accent_color.b() / 4,
+    // Dimmed accent for future portion of selected trajectory
+    let future_color = egui::Color32::from_rgb(
+        accent_color.r() / 2,
+        accent_color.g() / 2,
+        accent_color.b() / 2,
     );
 
-    for entry in entries {
-        if !entry.selected {
-            continue;
-        }
-        let positions = &entry.trajectory.positions;
-        let n = positions.len();
-        if n < 2 {
-            continue;
-        }
+    // --- Draw all trajectories ---
+    // Unselected first (behind), then selected on top
+    for pass in 0..2 {
+        let draw_selected = pass == 1;
+        for entry in entries {
+            let is_highlighted = has_selection && entry.selected;
 
-        let playhead = entry.current_frame.min(n - 1);
+            // Pass 0: draw non-highlighted; Pass 1: draw highlighted
+            if draw_selected != is_highlighted {
+                continue;
+            }
 
-        // Drop lines (only for selected)
-        let drop_color = egui::Color32::from_gray(40);
-        let drop_interval = (n / 20).max(1);
-        for i in (0..n).step_by(drop_interval) {
-            let top = camera.project(positions[i], center, rect);
-            let bot = camera.project([positions[i][0], positions[i][1], ground_z], center, rect);
-            let dist = ((top.x - bot.x).powi(2) + (top.y - bot.y).powi(2)).sqrt();
-            if dist > 3.0 {
-                painter.line_segment([top, bot], egui::Stroke::new(0.5, drop_color));
+            let positions = &entry.trajectory.positions;
+            let n = positions.len();
+            if n < 2 {
+                continue;
+            }
+
+            if is_highlighted {
+                let playhead = entry.current_frame.min(n - 1);
+
+                // Drop lines
+                let drop_color = egui::Color32::from_gray(40);
+                let drop_interval = (n / 20).max(1);
+                for i in (0..n).step_by(drop_interval) {
+                    let top = camera.project(positions[i], center, rect);
+                    let bot = camera.project([positions[i][0], positions[i][1], ground_z], center, rect);
+                    let dist = ((top.x - bot.x).powi(2) + (top.y - bot.y).powi(2)).sqrt();
+                    if dist > 3.0 {
+                        painter.line_segment([top, bot], egui::Stroke::new(0.5, drop_color));
+                    }
+                }
+                // Playhead drop line
+                {
+                    let top = camera.project(positions[playhead], center, rect);
+                    let bot = camera.project([positions[playhead][0], positions[playhead][1], ground_z], center, rect);
+                    painter.line_segment([top, bot], egui::Stroke::new(1.0, egui::Color32::from_gray(70)));
+                    painter.circle_filled(bot, 3.0, egui::Color32::from_gray(60));
+                }
+
+                // Trajectory with past/future split
+                for i in 0..n - 1 {
+                    let p0 = camera.project(positions[i], center, rect);
+                    let p1 = camera.project(positions[i + 1], center, rect);
+                    let (color, width) = if i < playhead {
+                        (accent_color, 2.0)
+                    } else {
+                        (future_color, 1.0)
+                    };
+                    painter.line_segment([p0, p1], egui::Stroke::new(width, color));
+                }
+
+                // Playhead marker
+                let current_pt = camera.project(positions[playhead], center, rect);
+                painter.circle_filled(current_pt, 5.0, accent_color);
+
+                // Frame counter
+                let pos = positions[playhead];
+                let frame_text = format!(
+                    "ep{} f{}/{} ({:.0},{:.0},{:.0})mm",
+                    entry.episode_index,
+                    playhead + 1, n,
+                    pos[0] * 1000.0, pos[1] * 1000.0, pos[2] * 1000.0,
+                );
+                painter.text(
+                    egui::pos2(rect.min.x + 6.0, rect.min.y + 16.0),
+                    egui::Align2::LEFT_TOP,
+                    &frame_text,
+                    egui::FontId::monospace(10.0),
+                    egui::Color32::from_gray(180),
+                );
+            } else {
+                // No selection: full accent; has selection but not this one: dim
+                let color = if has_selection { dim_color } else { accent_color };
+                for i in 0..n - 1 {
+                    let p0 = camera.project(positions[i], center, rect);
+                    let p1 = camera.project(positions[i + 1], center, rect);
+                    painter.line_segment([p0, p1], egui::Stroke::new(1.0, color));
+                }
             }
         }
-        // Playhead drop line
-        {
-            let top = camera.project(positions[playhead], center, rect);
-            let bot = camera.project([positions[playhead][0], positions[playhead][1], ground_z], center, rect);
-            painter.line_segment([top, bot], egui::Stroke::new(1.0, egui::Color32::from_gray(70)));
-            painter.circle_filled(bot, 3.0, egui::Color32::from_gray(60));
-        }
-
-        // Trajectory line
-        for i in 0..n - 1 {
-            let p0 = camera.project(positions[i], center, rect);
-            let p1 = camera.project(positions[i + 1], center, rect);
-            let (color, width) = if i < playhead {
-                (accent_color, 2.0)
-            } else {
-                (dim_accent, 1.0)
-            };
-            painter.line_segment([p0, p1], egui::Stroke::new(width, color));
-        }
-
-        // Markers
-        let start_pt = camera.project(positions[0], center, rect);
-        painter.circle_filled(start_pt, 3.0, egui::Color32::from_gray(100));
-
-        let current_pt = camera.project(positions[playhead], center, rect);
-        painter.circle_filled(current_pt, 5.0, accent_color);
-
-        if playhead == n - 1 {
-            let end_pt = camera.project(positions[n - 1], center, rect);
-            painter.circle_filled(end_pt, 4.0, accent_color);
-        }
-
-        // Frame counter label
-        let pos = positions[playhead];
-        let frame_text = format!(
-            "ep{} f{}/{} ({:.0},{:.0},{:.0})mm",
-            entry.episode_index,
-            playhead + 1, n,
-            pos[0] * 1000.0, pos[1] * 1000.0, pos[2] * 1000.0,
-        );
-        painter.text(
-            egui::pos2(rect.min.x + 6.0, rect.min.y + 16.0),
-            egui::Align2::LEFT_TOP,
-            &frame_text,
-            egui::FontId::monospace(10.0),
-            egui::Color32::from_gray(180),
-        );
     }
 
     // --- Global labels ---
