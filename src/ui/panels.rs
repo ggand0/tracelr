@@ -76,13 +76,12 @@ impl App {
                         }
                     }
                     ui.separator();
-                    if self.robot_kinematics.is_some() {
-                        if ui
+                    if self.robot_kinematics.is_some()
+                        && ui
                             .checkbox(&mut self.show_trajectory, "EE Trajectory")
                             .changed()
-                        {
-                            ui.close_menu();
-                        }
+                    {
+                        ui.close_menu();
                     }
                     if ui
                         .checkbox(&mut self.show_cache_overlay, "Cache Overlay")

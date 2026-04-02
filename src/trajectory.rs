@@ -14,8 +14,6 @@ pub(crate) struct EeTrajectory {
 /// Wraps the `k` crate's serial chain for FK computation.
 pub(crate) struct RobotKinematics {
     serial: k::SerialChain<f64>,
-    /// Joint names in the serial chain (movable joints only), in order.
-    joint_names: Vec<String>,
 }
 
 impl RobotKinematics {
@@ -49,19 +47,15 @@ impl RobotKinematics {
             .map(|n| n.joint().name.clone())
             .collect();
 
-        let ee_name = ee_link.joint().name.clone();
         log::info!(
             "Loaded URDF: {} -> {} (DOF={}, joints={:?})",
             urdf_path.display(),
-            ee_name,
+            ee_link.joint().name,
             serial.dof(),
             joint_names,
         );
 
-        Ok(Self {
-            serial,
-            joint_names,
-        })
+        Ok(Self { serial })
     }
 
     /// Compute FK for one set of joint angles (in degrees).
@@ -101,10 +95,6 @@ impl RobotKinematics {
         EeTrajectory { positions }
     }
 
-    pub fn joint_names(&self) -> &[String] {
-        &self.joint_names
-    }
-
     pub fn dof(&self) -> usize {
         self.serial.dof()
     }
@@ -122,12 +112,12 @@ pub(crate) fn load_episode_states(parquet_path: &Path, filter_episode: Option<us
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)
         .map_err(|e| format!("Parquet reader {}: {}", parquet_path.display(), e))?;
 
-    let mut reader = builder.build()
+    let reader = builder.build()
         .map_err(|e| format!("Build reader {}: {}", parquet_path.display(), e))?;
 
     let mut all_states: Vec<Vec<f32>> = Vec::new();
 
-    while let Some(batch) = reader.next() {
+    for batch in reader {
         let batch = batch.map_err(|e| format!("Read batch: {}", e))?;
 
         // For v3.0: filter rows by episode_index column
@@ -258,7 +248,7 @@ fn find_deepest_leaf(chain: &k::Chain<f64>) -> Result<k::node::Node<f64>, String
                 depth += 1;
                 cur = parent;
             }
-            if best.as_ref().map_or(true, |&(_, d)| depth > d) {
+            if best.as_ref().is_none_or(|&(_, d)| depth > d) {
                 best = Some((node.clone(), depth));
             }
         }
