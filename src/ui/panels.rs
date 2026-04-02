@@ -700,9 +700,9 @@ impl App {
         };
 
         // Collect episode indices + frames to display
-        let (pane_episodes, selected_episode) = if let Some(grid) = &self.grid_view {
+        let (pane_episodes, selected_episodes) = if let Some(grid) = &self.grid_view {
             let all = grid.all_pane_episodes();
-            let sel = grid.selected_episode();
+            let sel = grid.selected_episodes();
             (all, sel)
         } else {
             let frame = if self.viewing_video {
@@ -710,7 +710,9 @@ impl App {
             } else {
                 0
             };
-            (vec![(self.current_episode, frame)], Some(self.current_episode))
+            let mut sel = std::collections::HashSet::new();
+            sel.insert(self.current_episode);
+            (vec![(self.current_episode, frame)], sel)
         };
 
         if pane_episodes.is_empty() {
@@ -751,7 +753,7 @@ impl App {
                     trajectory: traj.clone(),
                     episode_index: ep_idx,
                     current_frame: frame,
-                    selected: selected_episode == Some(ep_idx),
+                    selected: selected_episodes.contains(&ep_idx),
                 });
             }
         }
@@ -762,9 +764,13 @@ impl App {
 
         // Label
         if self.grid_view.is_some() {
-            let sel_text = match selected_episode {
-                Some(ep) => format!("Selected: ep {}", ep),
-                None => "No selection".to_string(),
+            let sel_text = if selected_episodes.is_empty() {
+                "No selection".to_string()
+            } else {
+                let mut eps: Vec<usize> = selected_episodes.iter().copied().collect();
+                eps.sort();
+                let ep_strs: Vec<String> = eps.iter().map(|e| format!("{}", e)).collect();
+                format!("Selected: ep {}", ep_strs.join(", "))
             };
             ui.label(
                 egui::RichText::new(sel_text)

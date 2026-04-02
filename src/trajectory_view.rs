@@ -205,6 +205,7 @@ pub(crate) fn show_trajectory_overlay(
 
     // --- Draw all trajectories ---
     // Unselected first (behind), then selected on top
+    let mut label_y_offset = 0;
     for pass in 0..2 {
         let draw_selected = pass == 1;
         for entry in entries {
@@ -268,12 +269,13 @@ pub(crate) fn show_trajectory_overlay(
                     pos[0] * 1000.0, pos[1] * 1000.0, pos[2] * 1000.0,
                 );
                 painter.text(
-                    egui::pos2(rect.min.x + 6.0, rect.min.y + 16.0),
+                    egui::pos2(rect.min.x + 6.0, rect.min.y + 16.0 + label_y_offset as f32 * 12.0),
                     egui::Align2::LEFT_TOP,
                     &frame_text,
                     egui::FontId::monospace(10.0),
                     egui::Color32::from_gray(180),
                 );
+                label_y_offset += 1;
             } else {
                 // No selection: full accent; has selection but not this one: dim
                 let color = if has_selection { dim_color } else { accent_color };

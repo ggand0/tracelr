@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -40,8 +41,8 @@ pub(crate) struct GridView {
     pub playing: bool,
     last_frame_time: Option<Instant>,
     fps: u32,
-    /// Which pane is selected (for highlighting). None = no selection.
-    pub selected_pane: Option<usize>,
+    /// Selected panes (for highlighting). Empty = no selection.
+    pub selected_panes: HashSet<usize>,
 }
 
 impl GridView {
@@ -74,7 +75,7 @@ impl GridView {
             playing: true,
             last_frame_time: None,
             fps: ds.fps,
-            selected_pane: None,
+            selected_panes: HashSet::new(),
         }
     }
 
@@ -195,7 +196,7 @@ impl GridView {
     /// Rebuild all panes from `self.start_episode` using current cols/rows.
     fn rebuild(&mut self, ctx: &egui::Context, ds: &GridDataset) {
         self.panes.clear();
-        self.selected_pane = None;
+        self.selected_panes.clear();
 
         let total = ds.video_paths.len();
         for i in 0..(self.cols * self.rows) {
@@ -270,15 +271,15 @@ impl GridView {
             let response = ui.allocate_rect(rect, egui::Sense::click());
 
             if response.clicked() {
-                if self.selected_pane == Some(idx) {
-                    self.selected_pane = None; // toggle off
+                if self.selected_panes.contains(&idx) {
+                    self.selected_panes.remove(&idx);
                 } else {
-                    self.selected_pane = Some(idx);
+                    self.selected_panes.insert(idx);
                 }
             }
 
             // Background
-            let is_selected = self.selected_pane == Some(idx);
+            let is_selected = self.selected_panes.contains(&idx);
             let bg = if is_selected {
                 egui::Color32::from_gray(50)
             } else {
@@ -329,16 +330,12 @@ impl GridView {
         }
     }
 
-    /// Get the episode index of the selected pane.
-    pub fn selected_episode(&self) -> Option<usize> {
-        self.selected_pane.and_then(|idx| self.panes.get(idx).map(|p| p.episode_index))
-    }
-
-    /// Get the current frame (relative to episode start) of the selected pane.
-    pub fn selected_pane_frame(&self) -> Option<usize> {
-        self.selected_pane.and_then(|idx| {
-            self.panes.get(idx).map(|p| p.current_frame.saturating_sub(p.episode_start_frame))
-        })
+    /// Get the episode indices of all selected panes.
+    pub fn selected_episodes(&self) -> HashSet<usize> {
+        self.selected_panes
+            .iter()
+            .filter_map(|&idx| self.panes.get(idx).map(|p| p.episode_index))
+            .collect()
     }
 
     /// Get all pane episode indices and their current frame (relative to episode start).
