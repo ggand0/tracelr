@@ -39,7 +39,7 @@ impl OrbitCamera {
         let sin_e = self.elevation.sin() as f64;
         let fz = ry * sin_e + rz * cos_e;
 
-        let scale = self.zoom * rect.width().min(rect.height()) * 0.4;
+        let scale = self.zoom * rect.width().min(rect.height()) * 0.8;
         let screen_x = rect.center().x + (rx as f32) * scale;
         let screen_y = rect.center().y - (fz as f32) * scale;
 
@@ -182,11 +182,11 @@ pub(crate) fn show_trajectory_overlay(
         }
     }
 
-    // Dim color for unselected trajectories
+    // Dim color for unselected trajectories — half brightness
     let dim_color = egui::Color32::from_rgb(
-        accent_color.r() / 3,
-        accent_color.g() / 3,
-        accent_color.b() / 3,
+        accent_color.r() / 2,
+        accent_color.g() / 2,
+        accent_color.b() / 2,
     );
 
     // --- Draw unselected trajectories first (behind) ---
@@ -261,8 +261,7 @@ pub(crate) fn show_trajectory_overlay(
         painter.circle_filled(start_pt, 3.0, egui::Color32::from_gray(100));
 
         let current_pt = camera.project(positions[playhead], center, rect);
-        painter.circle_filled(current_pt, 5.0, egui::Color32::WHITE);
-        painter.circle_stroke(current_pt, 7.0, egui::Stroke::new(1.5, accent_color));
+        painter.circle_filled(current_pt, 5.0, accent_color);
 
         if playhead == n - 1 {
             let end_pt = camera.project(positions[n - 1], center, rect);
