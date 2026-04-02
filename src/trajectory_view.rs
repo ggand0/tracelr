@@ -70,6 +70,12 @@ pub(crate) fn show_trajectory_overlay(
 
     let mut interacted = false;
 
+    // Double-click: reset camera
+    if response.double_clicked() {
+        *camera = OrbitCamera::default();
+        interacted = true;
+    }
+
     // Mouse drag: orbit camera
     if response.dragged() {
         let delta = response.drag_delta();
