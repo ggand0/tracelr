@@ -751,7 +751,7 @@ impl App {
                     trajectory: traj.clone(),
                     episode_index: ep_idx,
                     current_frame: frame,
-                    selected: selected_episode.is_none() || selected_episode == Some(ep_idx),
+                    selected: selected_episode == Some(ep_idx),
                 });
             }
         }
