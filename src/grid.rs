@@ -168,7 +168,22 @@ impl GridView {
     }
 
     /// Toggle play/pause for all panes.
+    /// If all panes have finished, restart from the beginning.
     pub fn toggle_playing(&mut self) {
+        if !self.playing {
+            // Check if all panes are at the end — if so, seek to start (replay)
+            let all_done = self.panes.iter().all(|p| {
+                p.current_frame + 1 >= p.episode_start_frame + p.total_frames
+            });
+            if all_done && !self.panes.is_empty() {
+                for pane in &mut self.panes {
+                    pane.player.seek(pane.episode_start_frame);
+                    pane.current_frame = pane.episode_start_frame;
+                    pane.current_texture = None;
+                }
+            }
+        }
+
         self.playing = !self.playing;
         if self.playing {
             self.last_frame_time = Some(Instant::now());
