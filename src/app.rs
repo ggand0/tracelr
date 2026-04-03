@@ -60,6 +60,8 @@ pub struct App {
     pub(crate) show_trajectory: bool,
     /// Indices into observation.state that are joint positions (for FK).
     pub(crate) state_pos_indices: Vec<usize>,
+    /// CLI override for URDF path.
+    pub(crate) urdf_override: Option<PathBuf>,
 
     // Mode
     pub(crate) annotate_mode: bool,
@@ -72,7 +74,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(_cc: &eframe::CreationContext, initial_path: Option<PathBuf>, annotate: bool) -> Self {
+    pub fn new(_cc: &eframe::CreationContext, initial_path: Option<PathBuf>, annotate: bool, urdf_override: Option<PathBuf>) -> Self {
         let annotations = if annotate {
             AnnotationState::load_prompts(initial_path.as_deref())
         } else {
@@ -108,6 +110,7 @@ impl App {
             orbit_camera: OrbitCamera::default(),
             show_trajectory: true,
             state_pos_indices: Vec::new(),
+            urdf_override: urdf_override,
             annotate_mode: annotate,
             theme: UiTheme::teal_dark(),
             perf: PerfTracker::new(),
@@ -159,10 +162,13 @@ impl App {
                 self.state_pos_indices = crate::trajectory::pos_indices_from_state_names(&ds.info.state_names);
                 log::info!("State pos indices: {:?} (from {} state names)", self.state_pos_indices, ds.info.state_names.len());
 
-                if let Some(urdf_path) = crate::trajectory::discover_urdf(
-                    path,
-                    ds.info.robot_type.as_deref(),
-                ) {
+                let urdf_path = self.urdf_override.clone()
+                    .filter(|p| p.is_file())
+                    .or_else(|| crate::trajectory::discover_urdf(
+                        path,
+                        ds.info.robot_type.as_deref(),
+                    ));
+                if let Some(urdf_path) = urdf_path {
                     match RobotKinematics::from_urdf(&urdf_path, None) {
                         Ok(kin) => {
                             log::info!("Robot kinematics loaded: {} (DOF={})", urdf_path.display(), kin.dof());

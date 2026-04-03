@@ -26,6 +26,10 @@ struct Args {
     /// Enable annotation mode (prompt assignment, save/export)
     #[arg(long)]
     annotate: bool,
+
+    /// Path to robot URDF file for trajectory visualization
+    #[arg(long)]
+    urdf: Option<PathBuf>,
 }
 
 fn main() -> eframe::Result {
@@ -43,6 +47,6 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "lerobot-explorer",
         options,
-        Box::new(move |cc| Ok(Box::new(app::App::new(cc, args.path, args.annotate)))),
+        Box::new(move |cc| Ok(Box::new(app::App::new(cc, args.path, args.annotate, args.urdf)))),
     )
 }
