@@ -10,6 +10,8 @@ Browse episodes, play back videos, and inspect metadata. Optionally enable annot
 - **Episode navigation** — arrow keys, skate mode (Shift+Arrow for continuous advance), click the episode list, or drag the slider
 - **Episode cache** — sliding window cache preloads neighboring episodes for instant navigation
 - **Drag and drop** — drop a dataset folder onto the window to open it
+- **EE trajectory visualization** - 3D end-effector trajectory plots computed via forward kinematics from URDF files, with orbit camera, ground grid, and live playhead tracking
+- **Grid view** - play multiple episodes simultaneously in a tiled grid (press G), with multi-trajectory overlay to compare episodes at a glance
 
 ### Annotation mode (`--annotate`)
 
@@ -84,6 +86,9 @@ cargo run --profile opt-dev -- /path/to/lerobot/dataset/
 # Enable annotation mode (prompt assignment, save/export)
 cargo run --profile opt-dev -- --annotate /path/to/lerobot/dataset/
 
+# Specify a custom URDF for trajectory visualization
+cargo run --profile opt-dev -- --urdf /path/to/robot.urdf /path/to/dataset/
+
 # Or launch and drag-drop a dataset folder onto the window
 cargo run --profile opt-dev
 
@@ -102,7 +107,46 @@ RUST_LOG=lerobot_explorer=debug cargo run --profile opt-dev -- /path/to/dataset/
 | `Escape` | Exit video mode (show thumbnail) |
 | `Enter` | Re-enter video mode |
 | `1`-`9` | Assign prompt to current episode (annotation mode) |
+| `G` | Toggle grid view |
+| `T` | Toggle trajectory panel |
+| `+` / `-` | Resize grid (in grid mode) |
 | `Ctrl+S` | Save annotations (annotation mode) |
+
+### EE trajectory visualization
+
+The app computes end-effector positions via forward kinematics from URDF files and renders 3D trajectory plots alongside video playback.
+
+**URDF discovery order:**
+
+1. `--urdf /path/to/robot.urdf` (CLI flag, highest priority)
+2. `<dataset_dir>/robot.urdf` (dataset-local)
+3. `~/.config/lerobot-explorer/robots/<robot_type>.urdf` (user config, Linux)
+4. `~/Library/Application Support/lerobot-explorer/robots/<robot_type>.urdf` (macOS)
+
+The `<robot_type>` comes from the `robot_type` field in the dataset's `meta/info.json` (e.g. `"so101_follower"`, `"openarm_follower"`).
+
+**Setting up a URDF:**
+
+Place the robot's URDF file in the config directory with a filename matching the `robot_type`:
+
+```bash
+# Linux
+mkdir -p ~/.config/lerobot-explorer/robots/
+cp /path/to/so101.urdf ~/.config/lerobot-explorer/robots/so101_follower.urdf
+
+# macOS
+mkdir -p ~/Library/Application\ Support/lerobot-explorer/robots/
+cp /path/to/so101.urdf ~/Library/Application\ Support/lerobot-explorer/robots/so101_follower.urdf
+```
+
+Joint names in the URDF must match the `.pos` column base names in the dataset's `observation.state` features. For example, if the dataset has `shoulder_pan.pos`, the URDF joint should be named `shoulder_pan`. The app auto-detects the end-effector frame (deepest leaf link in the kinematic chain) and extracts only `.pos` indices from `observation.state`, so interleaved pos/vel/torque formats (like OpenArm) work automatically.
+
+**Supported robots:**
+
+- SO101 follower (5 DOF)
+- OpenArm v10 bimanual left/right (7 DOF)
+
+Any robot with a URDF and `observation.state` containing `.pos` columns will work.
 
 ### Configurable prompts (annotation mode)
 

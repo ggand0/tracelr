@@ -9,6 +9,8 @@ use crate::dataset::LeRobotDataset;
 use crate::grid::GridView;
 use crate::perf::PerfTracker;
 use crate::theme::UiTheme;
+use crate::trajectory::{RobotKinematics, TrajectoryCache};
+use crate::trajectory_view::OrbitCamera;
 
 const CACHE_COUNT: usize = 5; // ±5 episodes = 11 total slots
 const LRU_CAPACITY: usize = 50;
@@ -51,6 +53,16 @@ pub struct App {
     /// consumed after one frame to auto-scroll the episode list.
     pub(crate) scroll_to_selected: bool,
 
+    // Trajectory visualization
+    pub(crate) robot_kinematics: Option<RobotKinematics>,
+    pub(crate) trajectory_cache: TrajectoryCache,
+    pub(crate) orbit_camera: OrbitCamera,
+    pub(crate) show_trajectory: bool,
+    /// Indices into observation.state that are joint positions (for FK).
+    pub(crate) state_pos_indices: Vec<usize>,
+    /// CLI override for URDF path.
+    pub(crate) urdf_override: Option<PathBuf>,
+
     // Mode
     pub(crate) annotate_mode: bool,
 
@@ -62,7 +74,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(_cc: &eframe::CreationContext, initial_path: Option<PathBuf>, annotate: bool) -> Self {
+    pub fn new(_cc: &eframe::CreationContext, initial_path: Option<PathBuf>, annotate: bool, urdf_override: Option<PathBuf>) -> Self {
         let annotations = if annotate {
             AnnotationState::load_prompts(initial_path.as_deref())
         } else {
@@ -93,6 +105,12 @@ impl App {
             grid_cols: 2,
             grid_rows: 2,
             scroll_to_selected: false,
+            robot_kinematics: None,
+            trajectory_cache: TrajectoryCache::new(100),
+            orbit_camera: OrbitCamera::default(),
+            show_trajectory: true,
+            state_pos_indices: Vec::new(),
+            urdf_override,
             annotate_mode: annotate,
             theme: UiTheme::teal_dark(),
             perf: PerfTracker::new(),
@@ -137,6 +155,32 @@ impl App {
                         if to > from { Some((from, to)) } else { None }
                     })
                     .collect();
+
+                // Try to load robot kinematics for EE trajectory visualization
+                self.robot_kinematics = None;
+                self.trajectory_cache = TrajectoryCache::new(100);
+                self.state_pos_indices = crate::trajectory::pos_indices_from_state_names(&ds.info.state_names);
+                log::info!("State pos indices: {:?} (from {} state names)", self.state_pos_indices, ds.info.state_names.len());
+
+                let urdf_path = self.urdf_override.clone()
+                    .filter(|p| p.is_file())
+                    .or_else(|| crate::trajectory::discover_urdf(
+                        path,
+                        ds.info.robot_type.as_deref(),
+                    ));
+                if let Some(urdf_path) = urdf_path {
+                    match RobotKinematics::from_urdf(&urdf_path, None) {
+                        Ok(kin) => {
+                            log::info!("Robot kinematics loaded: {} (DOF={})", urdf_path.display(), kin.dof());
+                            self.robot_kinematics = Some(kin);
+                        }
+                        Err(e) => {
+                            log::warn!("Failed to load kinematics: {}", e);
+                        }
+                    }
+                } else {
+                    log::info!("No URDF found for trajectory visualization");
+                }
 
                 self.dataset = Some(ds);
                 self.current_episode = 0;
@@ -301,7 +345,16 @@ impl eframe::App for App {
                     }
                 });
         } else {
-            // Grid mode: minimal footer
+            // Grid mode: trajectory panel + minimal footer
+            if self.show_trajectory && self.robot_kinematics.is_some() {
+                egui::SidePanel::right("trajectory_panel")
+                    .default_width(280.0)
+                    .min_width(200.0)
+                    .show(ctx, |ui| {
+                        self.show_trajectory_panel(ui);
+                    });
+            }
+
             egui::TopBottomPanel::bottom("grid_footer")
                 .exact_height(22.0)
                 .show(ctx, |ui| {

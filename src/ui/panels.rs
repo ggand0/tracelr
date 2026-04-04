@@ -1,6 +1,8 @@
 use eframe::egui;
 
 use crate::app::App;
+use crate::trajectory;
+use crate::trajectory_view::TrajectoryEntry;
 
 impl App {
     pub(crate) fn show_menu_bar(&mut self, ctx: &egui::Context) {
@@ -74,6 +76,13 @@ impl App {
                         }
                     }
                     ui.separator();
+                    if self.robot_kinematics.is_some()
+                        && ui
+                            .checkbox(&mut self.show_trajectory, "EE Trajectory")
+                            .changed()
+                    {
+                        ui.close_menu();
+                    }
                     if ui
                         .checkbox(&mut self.show_cache_overlay, "Cache Overlay")
                         .changed()
@@ -263,6 +272,12 @@ impl App {
         if self.annotate_mode {
             ui.add_space(16.0);
             self.show_annotation_panel(ui);
+        }
+
+        // Trajectory view in single-view mode
+        if self.show_trajectory && self.robot_kinematics.is_some() {
+            ui.add_space(16.0);
+            self.show_trajectory_panel(ui);
         }
     }
 
@@ -650,14 +665,137 @@ impl App {
                 );
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let hint = if self.robot_kinematics.is_some() {
+                        "[G] exit  [T] trajectory  [+/-] resize  [←/→] page"
+                    } else {
+                        "[G] exit  [+/-] resize  [←/→] page"
+                    };
                     ui.label(
-                        egui::RichText::new("[G] exit  [+/-] resize  [←/→] page")
+                        egui::RichText::new(hint)
                             .font(font.clone())
                             .color(dim),
                     );
                 });
             }
         });
+    }
+
+    pub(crate) fn show_trajectory_panel(&mut self, ui: &mut egui::Ui) {
+        ui.label(
+            egui::RichText::new("EE Trajectory")
+                .strong()
+                .color(self.theme.heading),
+        );
+        ui.separator();
+
+        let ds = match &self.dataset {
+            Some(ds) => ds,
+            None => return,
+        };
+
+        let kin = match &self.robot_kinematics {
+            Some(k) => k,
+            None => return,
+        };
+
+        // Collect episode indices + frames to display
+        let (pane_episodes, selected_episodes) = if let Some(grid) = &self.grid_view {
+            let all = grid.all_pane_episodes();
+            let sel = grid.selected_episodes();
+            (all, sel)
+        } else {
+            let frame = if self.viewing_video {
+                self.current_frame.saturating_sub(self.episode_start_frame)
+            } else {
+                0
+            };
+            let mut sel = std::collections::HashSet::new();
+            sel.insert(self.current_episode);
+            (vec![(self.current_episode, frame)], sel)
+        };
+
+        if pane_episodes.is_empty() {
+            return;
+        }
+
+        // Ensure all trajectories are cached
+        for &(ep_idx, _) in &pane_episodes {
+            if self.trajectory_cache.get(ep_idx).is_some() {
+                continue;
+            }
+            let is_v3 = ds.info.codebase_version.starts_with("v3");
+            let parquet_path = trajectory::episode_data_path(
+                &ds.root,
+                ep_idx,
+                ds.info.chunks_size,
+                &ds.info.codebase_version,
+            );
+            let filter_ep = if is_v3 { Some(ep_idx) } else { None };
+            match trajectory::load_episode_states(&parquet_path, filter_ep) {
+                Ok(states) => {
+                    let traj = kin.compute_trajectory(&states, &self.state_pos_indices);
+                    log::debug!(
+                        "Computed trajectory for ep {}: {} points",
+                        ep_idx,
+                        traj.positions.len(),
+                    );
+                    self.trajectory_cache.insert(ep_idx, traj);
+                }
+                Err(e) => {
+                    log::warn!("Failed to load trajectory for ep {}: {}", ep_idx, e);
+                }
+            }
+        }
+
+        // Build overlay entries
+        let mut entries: Vec<TrajectoryEntry> = Vec::new();
+        for &(ep_idx, frame) in &pane_episodes {
+            if let Some(traj) = self.trajectory_cache.get(ep_idx) {
+                entries.push(TrajectoryEntry {
+                    trajectory: traj.clone(),
+                    episode_index: ep_idx,
+                    current_frame: frame,
+                    selected: selected_episodes.contains(&ep_idx),
+                });
+            }
+        }
+
+        if entries.is_empty() {
+            return;
+        }
+
+        // Label
+        if self.grid_view.is_some() {
+            let sel_text = if selected_episodes.is_empty() {
+                "No selection".to_string()
+            } else {
+                let mut eps: Vec<usize> = selected_episodes.iter().copied().collect();
+                eps.sort();
+                let ep_strs: Vec<String> = eps.iter().map(|e| format!("{}", e)).collect();
+                format!("Selected: ep {}", ep_strs.join(", "))
+            };
+            ui.label(
+                egui::RichText::new(sel_text)
+                    .monospace()
+                    .color(self.theme.muted),
+            );
+        } else {
+            ui.label(
+                egui::RichText::new(format!("Episode {}", self.current_episode))
+                    .monospace()
+                    .color(self.theme.muted),
+            );
+        }
+        ui.add_space(4.0);
+
+        // Draw overlay
+        let accent = self.theme.accent;
+        crate::trajectory_view::show_trajectory_overlay(
+            ui,
+            &entries,
+            &mut self.orbit_camera,
+            accent,
+        );
     }
 }
 
