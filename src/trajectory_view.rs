@@ -203,86 +203,104 @@ pub(crate) fn show_trajectory_overlay(
         accent_color.b() / 2,
     );
 
-    // --- Draw all trajectories ---
-    // Unselected first (behind), then selected on top
-    let mut label_y_offset = 0;
-    for pass in 0..2 {
-        let draw_selected = pass == 1;
+    // --- Draw trajectories ---
+    // When nothing selected: all get accent lines only (clean bundle).
+    // When selected: selected get full treatment on top, rest dim behind.
+    if !has_selection {
+        // No selection: past/future split on all, no drop lines/labels/playhead
         for entry in entries {
-            let is_highlighted = has_selection && entry.selected;
-
-            // Pass 0: draw non-highlighted; Pass 1: draw highlighted
-            if draw_selected != is_highlighted {
-                continue;
-            }
-
             let positions = &entry.trajectory.positions;
             let n = positions.len();
             if n < 2 {
                 continue;
             }
-
-            if is_highlighted {
-                let playhead = entry.current_frame.min(n - 1);
-
-                // Drop lines
-                let drop_color = egui::Color32::from_gray(40);
-                let drop_interval = (n / 20).max(1);
-                for i in (0..n).step_by(drop_interval) {
-                    let top = camera.project(positions[i], center, rect);
-                    let bot = camera.project([positions[i][0], positions[i][1], ground_z], center, rect);
-                    let dist = ((top.x - bot.x).powi(2) + (top.y - bot.y).powi(2)).sqrt();
-                    if dist > 3.0 {
-                        painter.line_segment([top, bot], egui::Stroke::new(0.5, drop_color));
-                    }
+            let playhead = entry.current_frame.min(n - 1);
+            for i in 0..n - 1 {
+                let p0 = camera.project(positions[i], center, rect);
+                let p1 = camera.project(positions[i + 1], center, rect);
+                let (color, width) = if i < playhead {
+                    (accent_color, 1.5)
+                } else {
+                    (future_color, 1.0)
+                };
+                painter.line_segment([p0, p1], egui::Stroke::new(width, color));
+            }
+        }
+    } else {
+        // Pass 0: dim non-selected behind. Pass 1: full selected on top.
+        let mut label_y_offset = 0;
+        for pass in 0..2 {
+            for entry in entries {
+                let is_selected = entry.selected;
+                if (pass == 1) != is_selected {
+                    continue;
                 }
-                // Playhead drop line
-                {
+
+                let positions = &entry.trajectory.positions;
+                let n = positions.len();
+                if n < 2 {
+                    continue;
+                }
+
+                if is_selected {
+                    let playhead = entry.current_frame.min(n - 1);
+
+                    // Drop lines
+                    let drop_color = egui::Color32::from_gray(40);
+                    let drop_interval = (n / 20).max(1);
+                    for i in (0..n).step_by(drop_interval) {
+                        let top = camera.project(positions[i], center, rect);
+                        let bot = camera.project([positions[i][0], positions[i][1], ground_z], center, rect);
+                        let dist = ((top.x - bot.x).powi(2) + (top.y - bot.y).powi(2)).sqrt();
+                        if dist > 3.0 {
+                            painter.line_segment([top, bot], egui::Stroke::new(0.5, drop_color));
+                        }
+                    }
+                    // Playhead drop line
                     let top = camera.project(positions[playhead], center, rect);
                     let bot = camera.project([positions[playhead][0], positions[playhead][1], ground_z], center, rect);
                     painter.line_segment([top, bot], egui::Stroke::new(1.0, egui::Color32::from_gray(70)));
                     painter.circle_filled(bot, 3.0, egui::Color32::from_gray(60));
-                }
 
-                // Trajectory with past/future split
-                for i in 0..n - 1 {
-                    let p0 = camera.project(positions[i], center, rect);
-                    let p1 = camera.project(positions[i + 1], center, rect);
-                    let (color, width) = if i < playhead {
-                        (accent_color, 2.0)
-                    } else {
-                        (future_color, 1.0)
-                    };
-                    painter.line_segment([p0, p1], egui::Stroke::new(width, color));
-                }
+                    // Past/future split
+                    for i in 0..n - 1 {
+                        let p0 = camera.project(positions[i], center, rect);
+                        let p1 = camera.project(positions[i + 1], center, rect);
+                        let (color, width) = if i < playhead {
+                            (accent_color, 2.0)
+                        } else {
+                            (future_color, 1.0)
+                        };
+                        painter.line_segment([p0, p1], egui::Stroke::new(width, color));
+                    }
 
-                // Playhead marker
-                let current_pt = camera.project(positions[playhead], center, rect);
-                painter.circle_filled(current_pt, 5.0, accent_color);
+                    // Playhead marker
+                    let current_pt = camera.project(positions[playhead], center, rect);
+                    painter.circle_filled(current_pt, 5.0, accent_color);
 
-                // Frame counter
-                let pos = positions[playhead];
-                let frame_text = format!(
-                    "ep{} f{}/{} ({:.0},{:.0},{:.0})mm",
-                    entry.episode_index,
-                    playhead + 1, n,
-                    pos[0] * 1000.0, pos[1] * 1000.0, pos[2] * 1000.0,
-                );
-                painter.text(
-                    egui::pos2(rect.min.x + 6.0, rect.min.y + 16.0 + label_y_offset as f32 * 12.0),
-                    egui::Align2::LEFT_TOP,
-                    &frame_text,
-                    egui::FontId::monospace(10.0),
-                    egui::Color32::from_gray(180),
-                );
-                label_y_offset += 1;
-            } else {
-                // No selection: full accent; has selection but not this one: dim
-                let color = if has_selection { dim_color } else { accent_color };
-                for i in 0..n - 1 {
-                    let p0 = camera.project(positions[i], center, rect);
-                    let p1 = camera.project(positions[i + 1], center, rect);
-                    painter.line_segment([p0, p1], egui::Stroke::new(1.0, color));
+                    // Frame counter
+                    let pos = positions[playhead];
+                    let frame_text = format!(
+                        "ep{} f{}/{} ({:.0},{:.0},{:.0})mm",
+                        entry.episode_index,
+                        playhead + 1, n,
+                        pos[0] * 1000.0, pos[1] * 1000.0, pos[2] * 1000.0,
+                    );
+                    painter.text(
+                        egui::pos2(rect.min.x + 6.0, rect.min.y + 16.0 + label_y_offset as f32 * 12.0),
+                        egui::Align2::LEFT_TOP,
+                        &frame_text,
+                        egui::FontId::monospace(10.0),
+                        egui::Color32::from_gray(180),
+                    );
+                    label_y_offset += 1;
+                } else {
+                    // Dim lines
+                    for i in 0..n - 1 {
+                        let p0 = camera.project(positions[i], center, rect);
+                        let p1 = camera.project(positions[i + 1], center, rect);
+                        painter.line_segment([p0, p1], egui::Stroke::new(1.0, dim_color));
+                    }
                 }
             }
         }
