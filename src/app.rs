@@ -110,7 +110,7 @@ impl App {
             orbit_camera: OrbitCamera::default(),
             show_trajectory: true,
             state_pos_indices: Vec::new(),
-            urdf_override: urdf_override,
+            urdf_override,
             annotate_mode: annotate,
             theme: UiTheme::teal_dark(),
             perf: PerfTracker::new(),
