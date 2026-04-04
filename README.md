@@ -10,8 +10,8 @@ Browse episodes, play back videos, and inspect metadata. Optionally enable annot
 - **Episode navigation** — arrow keys, skate mode (Shift+Arrow for continuous advance), click the episode list, or drag the slider
 - **Episode cache** — sliding window cache preloads neighboring episodes for instant navigation
 - **Drag and drop** — drop a dataset folder onto the window to open it
-- **EE trajectory visualization** — 3D end-effector trajectory plots computed via forward kinematics from URDF files, with orbit camera, ground grid, and live playhead tracking
-- **Grid view** — play multiple episodes simultaneously in a tiled grid (press G), with multi-trajectory overlay to compare episodes at a glance
+- **EE trajectory visualization** - 3D end-effector trajectory plots computed via forward kinematics from URDF files, with orbit camera, ground grid, and live playhead tracking
+- **Grid view** - play multiple episodes simultaneously in a tiled grid (press G), with multi-trajectory overlay to compare episodes at a glance
 
 ### Annotation mode (`--annotate`)
 
@@ -118,7 +118,7 @@ The app computes end-effector positions via forward kinematics from URDF files a
 
 **URDF discovery order:**
 
-1. `--urdf /path/to/robot.urdf` (CLI flag — highest priority)
+1. `--urdf /path/to/robot.urdf` (CLI flag, highest priority)
 2. `<dataset_dir>/robot.urdf` (dataset-local)
 3. `~/.config/lerobot-explorer/robots/<robot_type>.urdf` (user config, Linux)
 4. `~/Library/Application Support/lerobot-explorer/robots/<robot_type>.urdf` (macOS)
@@ -141,13 +141,12 @@ cp /path/to/so101.urdf ~/Library/Application\ Support/lerobot-explorer/robots/so
 
 Joint names in the URDF must match the `.pos` column base names in the dataset's `observation.state` features. For example, if the dataset has `shoulder_pan.pos`, the URDF joint should be named `shoulder_pan`. The app auto-detects the end-effector frame (deepest leaf link in the kinematic chain) and extracts only `.pos` indices from `observation.state`, so interleaved pos/vel/torque formats (like OpenArm) work automatically.
 
-**Tested robots:**
+**Supported robots:**
 
-| Robot | DOF | Dataset format | FK verified against placo |
-|-------|-----|---------------|--------------------------|
-| SO101 follower | 5 | v2.1 | < 0.2mm |
-| OpenArm v10 (bimanual left) | 7 | v3.0 | < 0.02mm |
-| OpenArm v10 (bimanual right) | 7 | v3.0 | visually confirmed |
+- SO101 follower (5 DOF)
+- OpenArm v10 bimanual left/right (7 DOF)
+
+Any robot with a URDF and `observation.state` containing `.pos` columns will work.
 
 ### Configurable prompts (annotation mode)
 
