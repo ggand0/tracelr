@@ -231,12 +231,12 @@ impl App {
                 .unwrap_or_default();
             if self.annotate_mode {
                 let (done, total) = self.annotations.progress(ds.episodes.len());
-                format!("lerobot-explorer - {} [{}/{}]", dir_name, done, total)
+                format!("tracelr - {} [{}/{}]", dir_name, done, total)
             } else {
-                format!("lerobot-explorer - {} ({} episodes)", dir_name, ds.episodes.len())
+                format!("tracelr - {} ({} episodes)", dir_name, ds.episodes.len())
             }
         } else {
-            "lerobot-explorer".to_string()
+            "tracelr".to_string()
         };
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
     }

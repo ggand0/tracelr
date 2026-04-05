@@ -1,24 +1,24 @@
-# lerobot-explorer
+# tracelr
 
-A fast desktop tool for exploring [LeRobot](https://github.com/huggingface/lerobot) datasets. Built with Rust, egui, and ffmpeg for real-time video playback of robot demonstration episodes.
+A fast desktop tool for exploring and tracing [LeRobot](https://github.com/huggingface/lerobot) datasets. Built with Rust, egui, and ffmpeg for real-time video playback of robot demonstration episodes.
 
 Browse episodes, play back videos, and inspect metadata. Optionally enable annotation mode (`--annotate`) to assign text prompts for VLA model training.
 
 ## Features
 
-- **Video playback** — auto-plays episodes at native framerate with Play/Pause (Space) and scrubbing (slider drag)
-- **Episode navigation** — arrow keys, skate mode (Shift+Arrow for continuous advance), click the episode list, or drag the slider
-- **Episode cache** — sliding window cache preloads neighboring episodes for instant navigation
-- **Drag and drop** — drop a dataset folder onto the window to open it
+- **Video playback** - auto-plays episodes at native framerate with Play/Pause (Space) and scrubbing (slider drag)
+- **Episode navigation** - arrow keys, skate mode (Shift+Arrow for continuous advance), click the episode list, or drag the slider
+- **Episode cache** - sliding window cache preloads neighboring episodes for instant navigation
+- **Drag and drop** - drop a dataset folder onto the window to open it
 - **EE trajectory visualization** - 3D end-effector trajectory plots computed via forward kinematics from URDF files, with orbit camera, ground grid, and live playhead tracking
 - **Grid view** - play multiple episodes simultaneously in a tiled grid (press G), with multi-trajectory overlay to compare episodes at a glance
 
 ### Annotation mode (`--annotate`)
 
-- **Annotation** — assign text prompts to episodes via keyboard shortcuts (1-9) or clickable prompt cards, with color-coded status in the episode list
-- **Configurable prompts** — define prompts per dataset via `prompts.yaml` (see below)
-- **Persistence** — annotations save to `annotations.json` in the dataset directory, auto-loaded on reopen
-- **Export** — export annotations to LeRobot's `tasks.jsonl` + `episodes.jsonl` format
+- **Annotation** - assign text prompts to episodes via keyboard shortcuts (1-9) or clickable prompt cards, with color-coded status in the episode list
+- **Configurable prompts** - define prompts per dataset via `prompts.yaml` (see below)
+- **Persistence** - annotations save to `annotations.json` in the dataset directory, auto-loaded on reopen
+- **Export** - export annotations to LeRobot's `tasks.jsonl` + `episodes.jsonl` format
 
 ## Supported LeRobot formats
 
@@ -53,13 +53,13 @@ Both formats are auto-detected from `meta/info.json`.
 
   **Windows**
 
-  1. **LLVM/Clang** — required by `bindgen` to generate FFmpeg bindings. Install and set the environment variable in PowerShell:
+  1. **LLVM/Clang** - required by `bindgen` to generate FFmpeg bindings. Install and set the environment variable in PowerShell:
      ```powershell
      winget install LLVM.LLVM
      [System.Environment]::SetEnvironmentVariable("LIBCLANG_PATH", "C:\Program Files\LLVM\bin", "User")
      ```
 
-  2. **FFmpeg** — download the **shared** build from [ffmpeg.org/download](https://ffmpeg.org/download.html#build-windows) (links to gyan.dev), extract it (e.g. to `C:\ffmpeg`), then set environment variables in PowerShell:
+  2. **FFmpeg** - download the **shared** build from [ffmpeg.org/download](https://ffmpeg.org/download.html#build-windows) (links to gyan.dev), extract it (e.g. to `C:\ffmpeg`), then set environment variables in PowerShell:
      ```powershell
      [System.Environment]::SetEnvironmentVariable("FFMPEG_DIR", "C:\ffmpeg", "User")
      # Add DLLs to PATH for runtime
@@ -80,7 +80,7 @@ The `opt-dev` profile gives release-level optimization with faster incremental b
 ## Usage
 
 ```bash
-# Open a dataset (viewer mode — browse and play episodes)
+# Open a dataset (viewer mode - browse and play episodes)
 cargo run --profile opt-dev -- /path/to/lerobot/dataset/
 
 # Enable annotation mode (prompt assignment, save/export)
@@ -93,7 +93,7 @@ cargo run --profile opt-dev -- --urdf /path/to/robot.urdf /path/to/dataset/
 cargo run --profile opt-dev
 
 # With debug logging
-RUST_LOG=lerobot_explorer=debug cargo run --profile opt-dev -- /path/to/dataset/
+RUST_LOG=tracelr=debug cargo run --profile opt-dev -- /path/to/dataset/
 ```
 
 ### Keyboard shortcuts
@@ -120,8 +120,8 @@ The app computes end-effector positions via forward kinematics from URDF files a
 
 1. `--urdf /path/to/robot.urdf` (CLI flag, highest priority)
 2. `<dataset_dir>/robot.urdf` (dataset-local)
-3. `~/.config/lerobot-explorer/robots/<robot_type>.urdf` (user config, Linux)
-4. `~/Library/Application Support/lerobot-explorer/robots/<robot_type>.urdf` (macOS)
+3. `~/.config/tracelr/robots/<robot_type>.urdf` (user config, Linux)
+4. `~/Library/Application Support/tracelr/robots/<robot_type>.urdf` (macOS)
 
 The `<robot_type>` comes from the `robot_type` field in the dataset's `meta/info.json` (e.g. `"so101_follower"`, `"openarm_follower"`).
 
@@ -131,12 +131,12 @@ Place the robot's URDF file in the config directory with a filename matching the
 
 ```bash
 # Linux
-mkdir -p ~/.config/lerobot-explorer/robots/
-cp /path/to/so101.urdf ~/.config/lerobot-explorer/robots/so101_follower.urdf
+mkdir -p ~/.config/tracelr/robots/
+cp /path/to/so101.urdf ~/.config/tracelr/robots/so101_follower.urdf
 
 # macOS
-mkdir -p ~/Library/Application\ Support/lerobot-explorer/robots/
-cp /path/to/so101.urdf ~/Library/Application\ Support/lerobot-explorer/robots/so101_follower.urdf
+mkdir -p ~/Library/Application\ Support/tracelr/robots/
+cp /path/to/so101.urdf ~/Library/Application\ Support/tracelr/robots/so101_follower.urdf
 ```
 
 Joint names in the URDF must match the `.pos` column base names in the dataset's `observation.state` features. For example, if the dataset has `shoulder_pan.pos`, the URDF joint should be named `shoulder_pan`. The app auto-detects the end-effector frame (deepest leaf link in the kinematic chain) and extracts only `.pos` indices from `observation.state`, so interleaved pos/vel/torque formats (like OpenArm) work automatically.
@@ -150,7 +150,7 @@ Any robot with a URDF and `observation.state` containing `.pos` columns will wor
 
 ### Configurable prompts (annotation mode)
 
-Create a `prompts.yaml` in the dataset directory or `~/.config/lerobot-explorer/prompts.yaml`:
+Create a `prompts.yaml` in the dataset directory or `~/.config/tracelr/prompts.yaml`:
 
 ```yaml
 prompts:

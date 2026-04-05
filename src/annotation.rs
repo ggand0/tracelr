@@ -83,7 +83,7 @@ fn deserialize_int_keys<'de, D: serde::Deserializer<'de>>(
 impl AnnotationState {
     /// Load prompts from YAML config. Search order:
     /// 1. `<dataset_dir>/prompts.yaml`
-    /// 2. `~/.config/lerobot-explorer/prompts.yaml`
+    /// 2. `~/.config/tracelr/prompts.yaml`
     /// 3. Hardcoded cube task defaults
     pub fn load_prompts(dataset_root: Option<&Path>) -> Self {
         // 1. Dataset-specific prompts
@@ -99,7 +99,7 @@ impl AnnotationState {
 
         // 2. User default prompts
         if let Some(config_dir) = dirs::config_dir() {
-            let user_prompts = config_dir.join("lerobot-explorer").join("prompts.yaml");
+            let user_prompts = config_dir.join("tracelr").join("prompts.yaml");
             if user_prompts.exists() {
                 if let Ok(state) = Self::from_yaml(&user_prompts) {
                     log::info!("Loaded prompts from {}", user_prompts.display());

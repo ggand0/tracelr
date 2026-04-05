@@ -1,8 +1,8 @@
-# Example prompts configuration for lerobot-explorer.
+# Example prompts configuration for tracelr.
 #
 # Place this file as:
-#   <dataset_dir>/prompts.yaml     — dataset-specific prompts
-#   ~/.config/lerobot-explorer/prompts.yaml  — user default
+#   <dataset_dir>/prompts.yaml     -- dataset-specific prompts
+#   ~/.config/tracelr/prompts.yaml  -- user default
 #
 # Keys 1-9 map to prompts by position.
 

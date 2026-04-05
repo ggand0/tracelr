@@ -18,7 +18,7 @@ mod ui;
 mod video;
 
 #[derive(Parser)]
-#[command(name = "lerobot-explorer", about = "LeRobot dataset explorer and annotation tool")]
+#[command(name = "tracelr", about = "A fast desktop tool for exploring and tracing LeRobot datasets")]
 struct Args {
     /// Path to a LeRobot dataset directory
     path: Option<PathBuf>,
@@ -45,7 +45,7 @@ fn main() -> eframe::Result {
     };
 
     eframe::run_native(
-        "lerobot-explorer",
+        "tracelr",
         options,
         Box::new(move |cc| Ok(Box::new(app::App::new(cc, args.path, args.annotate, args.urdf)))),
     )

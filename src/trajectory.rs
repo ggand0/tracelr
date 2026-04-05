@@ -274,7 +274,7 @@ pub(crate) fn pos_indices_from_state_names(state_names: &[String]) -> Vec<usize>
 /// Discover the URDF file for a dataset.
 /// Search order:
 /// 1. `<dataset_root>/robot.urdf`
-/// 2. `~/.config/lerobot-explorer/robots/<robot_type>.urdf`
+/// 2. `~/.config/tracelr/robots/<robot_type>.urdf`
 /// 3. Bundled paths for known robots
 pub(crate) fn discover_urdf(dataset_root: &Path, robot_type: Option<&str>) -> Option<PathBuf> {
     // 1. Dataset-local
@@ -287,7 +287,7 @@ pub(crate) fn discover_urdf(dataset_root: &Path, robot_type: Option<&str>) -> Op
     if let Some(rt) = robot_type {
         if let Some(config_dir) = dirs::config_dir() {
             let user_urdf = config_dir
-                .join("lerobot-explorer")
+                .join("tracelr")
                 .join("robots")
                 .join(format!("{}.urdf", rt));
             if user_urdf.is_file() {

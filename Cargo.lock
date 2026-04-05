@@ -2157,28 +2157,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 
 [[package]]
-name = "lerobot-explorer"
-version = "0.1.0"
-dependencies = [
- "arrow",
- "chrono",
- "clap",
- "dirs",
- "eframe",
- "egui",
- "env_logger",
- "ffmpeg-next",
- "k",
- "log",
- "parquet",
- "rfd",
- "serde",
- "serde_json",
- "serde_yaml",
- "urdf-rs 0.8.0",
-]
-
-[[package]]
 name = "lexical-core"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3916,6 +3894,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "702d4415e08923e7e1ef96cd5727c0dfed80b4d2fa25db9647fe5eb6f7c5a4c4"
 dependencies = [
  "winnow",
+]
+
+[[package]]
+name = "tracelr"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "chrono",
+ "clap",
+ "dirs",
+ "eframe",
+ "egui",
+ "env_logger",
+ "ffmpeg-next",
+ "k",
+ "log",
+ "parquet",
+ "rfd",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "urdf-rs 0.8.0",
 ]
 
 [[package]]
