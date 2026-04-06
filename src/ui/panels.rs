@@ -643,6 +643,86 @@ impl App {
         }
     }
 
+    pub(crate) fn show_grid_frame_slider(&mut self, _ctx: &egui::Context, ui: &mut egui::Ui) {
+        let (max_len, current_rel) = match &self.grid_view {
+            Some(grid) => (grid.max_episode_length(), grid.current_relative_frame()),
+            None => return,
+        };
+        if max_len <= 1 {
+            return;
+        }
+
+        let max = max_len - 1;
+        let accent = self.theme.accent;
+
+        let slider_width = ui.available_width();
+        let thickness = ui
+            .text_style_height(&egui::TextStyle::Body)
+            .max(ui.spacing().interact_size.y);
+        let (rect, response) =
+            ui.allocate_exact_size(egui::vec2(slider_width, thickness), egui::Sense::drag());
+
+        let handle_radius = rect.height() / 2.5;
+        let rail_radius = 4.0_f32;
+        let cy = rect.center().y;
+        let handle_range = (rect.left() + handle_radius)..=(rect.right() - handle_radius);
+
+        let mut idx = current_rel;
+
+        if let Some(pos) = response.interact_pointer_pos() {
+            let usable = rect.x_range().shrink(handle_radius);
+            let drag_t = ((pos.x - usable.min) / (usable.max - usable.min)).clamp(0.0, 1.0);
+            let new_rel_frame = (max as f32 * drag_t).round() as usize;
+
+            if let Some(grid) = &mut self.grid_view {
+                if !grid.frame_slider_dragging {
+                    grid.frame_slider_dragging = true;
+                    grid.playing = false;
+                }
+
+                // Throttled scrub across all panes (~15 Hz)
+                let now = std::time::Instant::now();
+                let scrub_interval = std::time::Duration::from_millis(67);
+                let should_scrub = self.last_scrub_seek
+                    .map_or(true, |t| now.duration_since(t) >= scrub_interval);
+                if should_scrub {
+                    grid.scrub_all_to(new_rel_frame);
+                    self.last_scrub_seek = Some(now);
+                }
+            }
+            idx = new_rel_frame;
+        }
+
+        if response.drag_stopped() {
+            let dragging = self.grid_view.as_ref().map_or(false, |g| g.frame_slider_dragging);
+            if dragging {
+                self.last_scrub_seek = None;
+                if let Some(grid) = &mut self.grid_view {
+                    grid.finish_scrub(idx);
+                }
+            }
+        }
+
+        // Draw rail
+        let rail = egui::Rect::from_min_max(
+            egui::pos2(rect.left(), cy - rail_radius),
+            egui::pos2(rect.right(), cy + rail_radius),
+        );
+        let t = if max > 0 { idx as f32 / max as f32 } else { 0.0 };
+        let handle_x = egui::lerp(handle_range, t);
+
+        ui.painter()
+            .rect_filled(rail, rail_radius, egui::Color32::from_gray(60));
+        let filled = egui::Rect::from_min_max(rail.min, egui::pos2(handle_x, rail.max.y));
+        ui.painter().rect_filled(filled, rail_radius, accent);
+        ui.painter().circle(
+            egui::pos2(handle_x, cy),
+            handle_radius,
+            accent,
+            egui::Stroke::NONE,
+        );
+    }
+
     pub(crate) fn show_grid_footer(&self, ui: &mut egui::Ui) {
         let font = egui::FontId::monospace(13.0);
         let bright = egui::Color32::from_gray(200);

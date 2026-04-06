@@ -374,6 +374,12 @@ impl eframe::App for App {
                 .show(ctx, |ui| {
                     self.show_grid_footer(ui);
                 });
+
+            egui::TopBottomPanel::bottom("grid_slider")
+                .exact_height(28.0)
+                .show(ctx, |ui| {
+                    self.show_grid_frame_slider(ctx, ui);
+                });
         }
 
         // Central panel

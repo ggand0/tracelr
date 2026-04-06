@@ -43,6 +43,8 @@ pub(crate) struct GridView {
     fps: u32,
     /// Selected panes (for highlighting). Empty = no selection.
     pub selected_panes: HashSet<usize>,
+    /// Frame slider drag state for grid scrubbing.
+    pub frame_slider_dragging: bool,
 }
 
 impl GridView {
@@ -76,6 +78,7 @@ impl GridView {
             last_frame_time: None,
             fps: ds.fps,
             selected_panes: HashSet::new(),
+            frame_slider_dragging: false,
         }
     }
 
@@ -119,12 +122,27 @@ impl GridView {
     /// Advance all panes by one frame if enough time has elapsed.
     pub fn tick(&mut self, ctx: &egui::Context) {
         if !self.playing {
-            // Still poll first frames for panes that haven't received one yet
-            for pane in &mut self.panes {
-                if pane.current_texture.is_none() {
-                    if let Some(tex) = pane.player.poll_next_frame() {
-                        pane.current_frame = pane.player.current_frame;
-                        pane.current_texture = Some(tex);
+            if self.frame_slider_dragging {
+                // Poll scrub frames from all panes
+                for pane in &mut self.panes {
+                    if let Some(image) = pane.player.poll_scrub_frame() {
+                        let name = format!("grid_scrub_{}_{}", pane.episode_index, pane.current_frame);
+                        pane.current_texture = Some(ctx.load_texture(
+                            name,
+                            image,
+                            egui::TextureOptions::LINEAR,
+                        ));
+                    }
+                }
+                ctx.request_repaint();
+            } else {
+                // Still poll first frames for panes that haven't received one yet
+                for pane in &mut self.panes {
+                    if pane.current_texture.is_none() {
+                        if let Some(tex) = pane.player.poll_next_frame() {
+                            pane.current_frame = pane.player.current_frame;
+                            pane.current_texture = Some(tex);
+                        }
                     }
                 }
             }
@@ -344,5 +362,42 @@ impl GridView {
             .iter()
             .map(|p| (p.episode_index, p.current_frame.saturating_sub(p.episode_start_frame)))
             .collect()
+    }
+
+    /// Maximum episode length across all panes (for slider range).
+    pub fn max_episode_length(&self) -> usize {
+        self.panes.iter().map(|p| p.total_frames).max().unwrap_or(0)
+    }
+
+    /// Current relative frame of the first pane (for slider position during playback).
+    pub fn current_relative_frame(&self) -> usize {
+        self.panes.first()
+            .map(|p| p.current_frame.saturating_sub(p.episode_start_frame))
+            .unwrap_or(0)
+    }
+
+    /// Scrub all panes to a relative frame position.
+    pub fn scrub_all_to(&mut self, relative_frame: usize) {
+        for pane in &mut self.panes {
+            let clamped = relative_frame.min(pane.total_frames.saturating_sub(1));
+            let abs_frame = pane.episode_start_frame + clamped;
+            pane.current_frame = abs_frame;
+            pane.player.scrub_to(abs_frame);
+        }
+    }
+
+    /// Finish scrubbing: cancel scrub decoders, seek all panes for playback,
+    /// and resume playing.
+    pub fn finish_scrub(&mut self, relative_frame: usize) {
+        self.frame_slider_dragging = false;
+        for pane in &mut self.panes {
+            let clamped = relative_frame.min(pane.total_frames.saturating_sub(1));
+            let abs_frame = pane.episode_start_frame + clamped;
+            pane.current_frame = abs_frame;
+            pane.player.cancel_scrub();
+            pane.player.seek(abs_frame);
+        }
+        self.playing = true;
+        self.last_frame_time = None;
     }
 }
