@@ -1,4 +1,4 @@
-# tracelr
+# tracelr `/ˈtreɪsər/`
 
 A fast desktop tool for exploring and tracing [LeRobot](https://github.com/huggingface/lerobot) datasets. Built with Rust, egui, and ffmpeg for real-time video playback of robot demonstration episodes.
 
