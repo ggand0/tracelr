@@ -340,6 +340,89 @@ fn decode_all_frames_inner(
     }
 }
 
+/// Decode a single frame at a specific frame index by seeking to the nearest
+/// keyframe and decoding forward. Used for slider scrubbing.
+pub(crate) fn decode_frame_at(
+    video_path: &Path,
+    target_frame: usize,
+    fps: u32,
+    cancel: &AtomicBool,
+) -> Result<egui::ColorImage, Box<dyn std::error::Error + Send + Sync>> {
+    ensure_ffmpeg_init();
+
+    let mut ictx = ffmpeg_next::format::input(video_path)?;
+
+    let video_stream_index;
+    let decoder_params;
+    let time_base;
+    {
+        let stream = ictx
+            .streams()
+            .best(ffmpeg_next::media::Type::Video)
+            .ok_or("No video stream found")?;
+        video_stream_index = stream.index();
+        decoder_params = stream.parameters();
+        time_base = stream.time_base();
+    }
+
+    let mut decoder = ffmpeg_next::codec::context::Context::from_parameters(decoder_params)?
+        .decoder()
+        .video()?;
+
+    if target_frame > 0 {
+        let target_us = (target_frame as f64 / fps as f64 * 1_000_000.0) as i64;
+        let _ = ictx.seek(target_us, ..target_us);
+    }
+
+    let fps_f64 = fps as f64;
+    let tb_num = time_base.0 as f64;
+    let tb_den = time_base.1 as f64;
+    let mut decoded = ffmpeg_next::frame::Video::empty();
+
+    for (stream, packet) in ictx.packets() {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("Cancelled".into());
+        }
+        if stream.index() != video_stream_index {
+            continue;
+        }
+
+        decoder.send_packet(&packet).ok();
+        while decoder.receive_frame(&mut decoded).is_ok() {
+            if cancel.load(Ordering::Relaxed) {
+                return Err("Cancelled".into());
+            }
+
+            let frame_idx = decoded.pts().map(|pts| {
+                (pts as f64 * tb_num / tb_den * fps_f64).round() as usize
+            });
+
+            if let Some(idx) = frame_idx {
+                if idx >= target_frame {
+                    return frame_to_color_image(&decoded);
+                }
+            }
+        }
+    }
+
+    decoder.send_eof()?;
+    while decoder.receive_frame(&mut decoded).is_ok() {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("Cancelled".into());
+        }
+        let frame_idx = decoded.pts().map(|pts| {
+            (pts as f64 * tb_num / tb_den * fps_f64).round() as usize
+        });
+        if let Some(idx) = frame_idx {
+            if idx >= target_frame {
+                return frame_to_color_image(&decoded);
+            }
+        }
+    }
+
+    Err("Frame not found".into())
+}
+
 /// Decode middle frame with timing info, for use in background threads.
 pub(crate) fn decode_middle_frame_timed(
     video_path: &Path,

@@ -448,6 +448,10 @@ pub(crate) struct VideoPlayer {
 
     video_path: PathBuf,
     ctx: egui::Context,
+
+    // Scrub decode: separate from main playback decoder
+    scrub_rx: Option<mpsc::Receiver<Option<egui::ColorImage>>>,
+    scrub_cancel: Option<Arc<AtomicBool>>,
 }
 
 impl VideoPlayer {
@@ -479,6 +483,8 @@ impl VideoPlayer {
             fps,
             video_path: video_path.to_path_buf(),
             ctx: ctx.clone(),
+            scrub_rx: None,
+            scrub_cancel: None,
         }
     }
 
@@ -519,11 +525,57 @@ impl VideoPlayer {
             video::decode_all_frames_sync(&path, tx, cancel, ctx, seek_frame);
         }));
     }
+
+    /// Start a lightweight scrub decode: seek to the nearest keyframe and
+    /// decode forward to exactly `frame`, returning only that one frame.
+    /// Cancels any in-flight scrub decode.
+    pub fn scrub_to(&mut self, frame: usize) {
+        if let Some(cancel) = &self.scrub_cancel {
+            cancel.store(true, Ordering::Relaxed);
+        }
+
+        let (tx, rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.scrub_cancel = Some(cancel.clone());
+        self.scrub_rx = Some(rx);
+
+        let path = self.video_path.clone();
+        let fps = self.fps;
+        let ctx = self.ctx.clone();
+        std::thread::spawn(move || {
+            let image = video::decode_frame_at(&path, frame, fps, &cancel).ok();
+            let _ = tx.send(image);
+            ctx.request_repaint();
+        });
+    }
+
+    /// Poll for a completed scrub frame.
+    pub fn poll_scrub_frame(&mut self) -> Option<egui::ColorImage> {
+        let rx = self.scrub_rx.as_ref()?;
+        match rx.try_recv() {
+            Ok(image) => {
+                self.scrub_rx = None;
+                self.scrub_cancel = None;
+                image
+            }
+            Err(_) => None,
+        }
+    }
+
+    /// Cancel any in-flight scrub decode.
+    pub fn cancel_scrub(&mut self) {
+        if let Some(cancel) = &self.scrub_cancel {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        self.scrub_rx = None;
+        self.scrub_cancel = None;
+    }
 }
 
 impl Drop for VideoPlayer {
     fn drop(&mut self) {
         self.cancel.store(true, Ordering::Relaxed);
+        self.cancel_scrub();
     }
 }
 

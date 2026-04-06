@@ -527,13 +527,28 @@ impl App {
             let new_abs_frame = self.episode_start_frame + new_ep_frame;
             if new_abs_frame != self.current_frame {
                 self.current_frame = new_abs_frame;
+
+                // Throttled scrub: decode a single frame at the new position (~15 Hz)
+                let now = std::time::Instant::now();
+                let scrub_interval = std::time::Duration::from_millis(67);
+                let should_scrub = self.last_scrub_seek
+                    .map_or(true, |t| now.duration_since(t) >= scrub_interval);
+                if should_scrub {
+                    if let Some(player) = &mut self.player {
+                        player.scrub_to(self.current_frame);
+                    }
+                    self.last_scrub_seek = Some(now);
+                }
             }
             idx = new_ep_frame;
         }
 
         if response.drag_stopped() && self.frame_slider_dragging {
             self.frame_slider_dragging = false;
+            self.last_scrub_seek = None;
             if let Some(player) = &mut self.player {
+                player.cancel_scrub();
+                // Final seek to position the sequential decoder for playback
                 player.seek(self.current_frame);
             }
         }
