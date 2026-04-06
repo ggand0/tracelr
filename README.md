@@ -1,3 +1,5 @@
+<img src="https://github.com/user-attachments/assets/1abfe612-9c27-4916-9974-df93640d5f7c" alt="Alt text" width="600"/>
+
 # tracelr
 
 A fast desktop tool for exploring and tracing [LeRobot](https://github.com/huggingface/lerobot) datasets (pronounced "tracer"). Built with Rust, egui, and ffmpeg for real-time video playback of robot demonstration episodes.
