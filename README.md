@@ -1,5 +1,3 @@
-<img src="https://github.com/user-attachments/assets/1abfe612-9c27-4916-9974-df93640d5f7c" alt="Alt text" width="600"/>
-
 # tracelr
 
 A fast desktop tool for exploring and tracing [LeRobot](https://github.com/huggingface/lerobot) datasets (pronounced "tracer"). Built with Rust, egui, and ffmpeg for real-time video playback of robot demonstration episodes.
@@ -171,6 +169,7 @@ Search order: dataset directory > user config > built-in defaults.
 
 ### Annotation output (annotation mode)
 
+
 Annotations save to `<dataset_dir>/annotations.json`:
 
 ```json
@@ -189,3 +188,12 @@ Annotations save to `<dataset_dir>/annotations.json`:
 ```
 
 Use File > Export to LeRobot to write `meta/tasks.jsonl` and update `meta/episodes.jsonl` with task assignments.
+
+## License
+
+tracelr is licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
+- MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+
+at your option.
