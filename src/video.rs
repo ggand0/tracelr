@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Once};
 use std::time::Instant;
@@ -340,87 +340,131 @@ fn decode_all_frames_inner(
     }
 }
 
-/// Decode a single frame at a specific frame index by seeking to the nearest
-/// keyframe and decoding forward. Used for slider scrubbing.
-pub(crate) fn decode_frame_at(
-    video_path: &Path,
-    target_frame: usize,
+/// Persistent scrub worker thread. Holds an open ffmpeg decoder and accepts
+/// target frame requests through a channel. Avoids per-scrub file open, codec
+/// init, and thread spawn. Forward scrubs skip the seek entirely when the
+/// target is within a keyframe interval of the last decoded position.
+pub(crate) fn scrub_worker(
+    video_path: PathBuf,
     fps: u32,
-    cancel: &AtomicBool,
-) -> Result<egui::ColorImage, Box<dyn std::error::Error + Send + Sync>> {
+    request_rx: mpsc::Receiver<usize>,
+    result_tx: mpsc::Sender<Option<egui::ColorImage>>,
+    ctx: egui::Context,
+) {
     ensure_ffmpeg_init();
 
-    let mut ictx = ffmpeg_next::format::input(video_path)?;
+    let mut ictx = match ffmpeg_next::format::input(&video_path) {
+        Ok(c) => c,
+        Err(e) => {
+            log::error!("Scrub worker: failed to open {}: {}", video_path.display(), e);
+            return;
+        }
+    };
 
     let video_stream_index;
     let decoder_params;
     let time_base;
     {
-        let stream = ictx
-            .streams()
-            .best(ffmpeg_next::media::Type::Video)
-            .ok_or("No video stream found")?;
+        let stream = match ictx.streams().best(ffmpeg_next::media::Type::Video) {
+            Some(s) => s,
+            None => {
+                log::error!("Scrub worker: no video stream");
+                return;
+            }
+        };
         video_stream_index = stream.index();
         decoder_params = stream.parameters();
         time_base = stream.time_base();
     }
 
-    let mut decoder = ffmpeg_next::codec::context::Context::from_parameters(decoder_params)?
-        .decoder()
-        .video()?;
-
-    if target_frame > 0 {
-        let target_us = (target_frame as f64 / fps as f64 * 1_000_000.0) as i64;
-        let _ = ictx.seek(target_us, ..target_us);
-    }
+    let mut decoder = match ffmpeg_next::codec::context::Context::from_parameters(decoder_params)
+        .and_then(|c| c.decoder().video())
+    {
+        Ok(d) => d,
+        Err(e) => {
+            log::error!("Scrub worker: failed to create decoder: {}", e);
+            return;
+        }
+    };
 
     let fps_f64 = fps as f64;
     let tb_num = time_base.0 as f64;
     let tb_den = time_base.1 as f64;
-    let mut decoded = ffmpeg_next::frame::Video::empty();
+    let mut decoded_frame = ffmpeg_next::frame::Video::empty();
+    let mut last_pos: Option<usize> = None;
 
-    for (stream, packet) in ictx.packets() {
-        if cancel.load(Ordering::Relaxed) {
-            return Err("Cancelled".into());
-        }
-        if stream.index() != video_stream_index {
-            continue;
+    loop {
+        // Block until a scrub request arrives
+        let mut target = match request_rx.recv() {
+            Ok(t) => t,
+            Err(_) => break, // channel closed, shut down
+        };
+        // Drain to latest request (discard stale ones)
+        while let Ok(t) = request_rx.try_recv() {
+            target = t;
         }
 
-        decoder.send_packet(&packet).ok();
-        while decoder.receive_frame(&mut decoded).is_ok() {
-            if cancel.load(Ordering::Relaxed) {
-                return Err("Cancelled".into());
+        // Decide: decode forward (fast) or seek (needed for backward / large jumps)
+        let need_seek = match last_pos {
+            Some(pos) if target > pos && target - pos <= 60 => false,
+            _ => true,
+        };
+
+        if need_seek {
+            let target_us = (target as f64 / fps_f64 * 1_000_000.0) as i64;
+            let _ = ictx.seek(target_us.max(0), ..target_us.max(0));
+            decoder.flush();
+            last_pos = None;
+        }
+
+        // Decode forward to target
+        let mut found = false;
+        for (stream, packet) in ictx.packets() {
+            if stream.index() != video_stream_index {
+                continue;
             }
+            decoder.send_packet(&packet).ok();
+            while decoder.receive_frame(&mut decoded_frame).is_ok() {
+                if let Some(pts) = decoded_frame.pts() {
+                    let idx = (pts as f64 * tb_num / tb_den * fps_f64).round() as usize;
+                    last_pos = Some(idx);
 
-            let frame_idx = decoded.pts().map(|pts| {
-                (pts as f64 * tb_num / tb_den * fps_f64).round() as usize
-            });
-
-            if let Some(idx) = frame_idx {
-                if idx >= target_frame {
-                    return frame_to_color_image(&decoded);
+                    if idx >= target {
+                        let image = frame_to_color_image(&decoded_frame).ok();
+                        let _ = result_tx.send(image);
+                        ctx.request_repaint();
+                        found = true;
+                        break;
+                    }
                 }
             }
-        }
-    }
-
-    decoder.send_eof()?;
-    while decoder.receive_frame(&mut decoded).is_ok() {
-        if cancel.load(Ordering::Relaxed) {
-            return Err("Cancelled".into());
-        }
-        let frame_idx = decoded.pts().map(|pts| {
-            (pts as f64 * tb_num / tb_den * fps_f64).round() as usize
-        });
-        if let Some(idx) = frame_idx {
-            if idx >= target_frame {
-                return frame_to_color_image(&decoded);
+            if found {
+                break;
             }
         }
-    }
 
-    Err("Frame not found".into())
+        if !found {
+            // Flush decoder for last buffered frames (near end of file)
+            decoder.send_eof().ok();
+            while decoder.receive_frame(&mut decoded_frame).is_ok() {
+                if let Some(pts) = decoded_frame.pts() {
+                    let idx = (pts as f64 * tb_num / tb_den * fps_f64).round() as usize;
+                    if idx >= target {
+                        let image = frame_to_color_image(&decoded_frame).ok();
+                        let _ = result_tx.send(image);
+                        ctx.request_repaint();
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if !found {
+                let _ = result_tx.send(None);
+            }
+            // After EOF, force seek on next request
+            last_pos = None;
+        }
+    }
 }
 
 /// Decode middle frame with timing info, for use in background threads.

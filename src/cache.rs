@@ -449,9 +449,9 @@ pub(crate) struct VideoPlayer {
     video_path: PathBuf,
     ctx: egui::Context,
 
-    // Scrub decode: separate from main playback decoder
-    scrub_rx: Option<mpsc::Receiver<Option<egui::ColorImage>>>,
-    scrub_cancel: Option<Arc<AtomicBool>>,
+    // Persistent scrub worker (created lazily on first scrub)
+    scrub_tx: Option<mpsc::Sender<usize>>,
+    scrub_result_rx: Option<mpsc::Receiver<Option<egui::ColorImage>>>,
 }
 
 impl VideoPlayer {
@@ -483,8 +483,8 @@ impl VideoPlayer {
             fps,
             video_path: video_path.to_path_buf(),
             ctx: ctx.clone(),
-            scrub_rx: None,
-            scrub_cancel: None,
+            scrub_tx: None,
+            scrub_result_rx: None,
         }
     }
 
@@ -526,56 +526,57 @@ impl VideoPlayer {
         }));
     }
 
-    /// Start a lightweight scrub decode: seek to the nearest keyframe and
-    /// decode forward to exactly `frame`, returning only that one frame.
-    /// Cancels any in-flight scrub decode.
+    /// Send a scrub request to the persistent worker. The worker decodes
+    /// forward from its current position (fast for forward scrubs) or seeks
+    /// if needed. Created lazily on first call.
     pub fn scrub_to(&mut self, frame: usize) {
-        if let Some(cancel) = &self.scrub_cancel {
-            cancel.store(true, Ordering::Relaxed);
+        // Drain stale results so poll only sees the latest
+        if let Some(rx) = &self.scrub_result_rx {
+            while rx.try_recv().is_ok() {}
         }
 
-        let (tx, rx) = mpsc::channel();
-        let cancel = Arc::new(AtomicBool::new(false));
-        self.scrub_cancel = Some(cancel.clone());
-        self.scrub_rx = Some(rx);
+        // Lazily spawn the persistent scrub worker
+        if self.scrub_tx.is_none() {
+            let (req_tx, req_rx) = mpsc::channel();
+            let (res_tx, res_rx) = mpsc::channel();
+            self.scrub_tx = Some(req_tx);
+            self.scrub_result_rx = Some(res_rx);
 
-        let path = self.video_path.clone();
-        let fps = self.fps;
-        let ctx = self.ctx.clone();
-        std::thread::spawn(move || {
-            let image = video::decode_frame_at(&path, frame, fps, &cancel).ok();
-            let _ = tx.send(image);
-            ctx.request_repaint();
-        });
+            let path = self.video_path.clone();
+            let fps = self.fps;
+            let ctx = self.ctx.clone();
+            std::thread::spawn(move || {
+                video::scrub_worker(path, fps, req_rx, res_tx, ctx);
+            });
+        }
+
+        if let Some(tx) = &self.scrub_tx {
+            let _ = tx.send(frame);
+        }
     }
 
-    /// Poll for a completed scrub frame.
+    /// Poll for a completed scrub frame from the persistent worker.
     pub fn poll_scrub_frame(&mut self) -> Option<egui::ColorImage> {
-        let rx = self.scrub_rx.as_ref()?;
+        let rx = self.scrub_result_rx.as_ref()?;
         match rx.try_recv() {
-            Ok(image) => {
-                self.scrub_rx = None;
-                self.scrub_cancel = None;
-                image
-            }
+            Ok(image) => image,
             Err(_) => None,
         }
     }
 
-    /// Cancel any in-flight scrub decode.
+    /// Drain pending scrub results. The worker stays alive for reuse.
     pub fn cancel_scrub(&mut self) {
-        if let Some(cancel) = &self.scrub_cancel {
-            cancel.store(true, Ordering::Relaxed);
+        if let Some(rx) = &self.scrub_result_rx {
+            while rx.try_recv().is_ok() {}
         }
-        self.scrub_rx = None;
-        self.scrub_cancel = None;
     }
 }
 
 impl Drop for VideoPlayer {
     fn drop(&mut self) {
         self.cancel.store(true, Ordering::Relaxed);
-        self.cancel_scrub();
+        // Dropping scrub_tx closes the channel, signaling the worker to exit
+        self.scrub_tx = None;
     }
 }
 
