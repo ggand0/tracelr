@@ -548,9 +548,11 @@ impl App {
             self.last_scrub_seek = None;
             if let Some(player) = &mut self.player {
                 player.cancel_scrub();
-                // Final seek to position the sequential decoder for playback
                 player.seek(self.current_frame);
             }
+            // Resume playback immediately from the new position
+            self.playing = true;
+            self.last_frame_time = None;
         }
 
         // Draw rail
