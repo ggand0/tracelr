@@ -141,12 +141,12 @@ cp /path/to/so101.urdf ~/Library/Application\ Support/tracelr/robots/so101_follo
 
 Joint names in the URDF must match the `.pos` column base names in the dataset's `observation.state` features. For example, if the dataset has `shoulder_pan.pos`, the URDF joint should be named `shoulder_pan`. The app auto-detects the end-effector frame (deepest leaf link in the kinematic chain) and extracts only `.pos` indices from `observation.state`, so interleaved pos/vel/torque formats (like OpenArm) work automatically.
 
-**Supported robots:**
+**Tested robots:**
 
 - SO101 follower (5 DOF)
 - OpenArm v10 bimanual left/right (7 DOF)
 
-Any robot with a URDF and `observation.state` containing `.pos` columns will work.
+Any robot with a URDF and `observation.state` containing `.pos` columns should work. Note that trajectory visualization currently expects joint values in **degrees** (i.e. datasets recorded with `use_degrees=True` in lerobot). Datasets using the default `RANGE_M100_100` normalization (values in [-100, 100]) are not yet supported and will produce incorrect trajectories.
 
 ### Configurable prompts (annotation mode)
 

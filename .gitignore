@@ -21,3 +21,4 @@ devlogs/
 # Claude Code instructions (local only)
 CLAUDE.md
 tmp/
+resources/
