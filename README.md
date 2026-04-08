@@ -1,5 +1,7 @@
 # tracelr
 
+<img src="https://github.com/user-attachments/assets/1abfe612-9c27-4916-9974-df93640d5f7c" alt="Alt text" width="600"/>
+
 A fast desktop tool for exploring and tracing [LeRobot](https://github.com/huggingface/lerobot) datasets (pronounced "tracer"). Built with Rust, egui, and ffmpeg for real-time video playback of robot demonstration episodes.
 
 Browse episodes, play back videos, and inspect metadata. Optionally enable annotation mode (`--annotate`) to assign text prompts for VLA model training.
