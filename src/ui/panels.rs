@@ -532,7 +532,7 @@ impl App {
                 let now = std::time::Instant::now();
                 let scrub_interval = std::time::Duration::from_millis(67);
                 let should_scrub = self.last_scrub_seek
-                    .map_or(true, |t| now.duration_since(t) >= scrub_interval);
+                    .is_none_or(|t| now.duration_since(t) >= scrub_interval);
                 if should_scrub {
                     if let Some(player) = &mut self.player {
                         player.scrub_to(self.current_frame);
@@ -684,7 +684,7 @@ impl App {
                 let now = std::time::Instant::now();
                 let scrub_interval = std::time::Duration::from_millis(67);
                 let should_scrub = self.last_scrub_seek
-                    .map_or(true, |t| now.duration_since(t) >= scrub_interval);
+                    .is_none_or(|t| now.duration_since(t) >= scrub_interval);
                 if should_scrub {
                     grid.scrub_all_to(new_rel_frame);
                     self.last_scrub_seek = Some(now);
@@ -694,7 +694,7 @@ impl App {
         }
 
         if response.drag_stopped() {
-            let dragging = self.grid_view.as_ref().map_or(false, |g| g.frame_slider_dragging);
+            let dragging = self.grid_view.as_ref().is_some_and(|g| g.frame_slider_dragging);
             if dragging {
                 self.last_scrub_seek = None;
                 if let Some(grid) = &mut self.grid_view {

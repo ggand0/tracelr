@@ -393,22 +393,16 @@ pub(crate) fn scrub_worker(
     let mut decoded_frame = ffmpeg_next::frame::Video::empty();
     let mut last_pos: Option<usize> = None;
 
-    loop {
-        // Block until a scrub request arrives
-        let mut target = match request_rx.recv() {
-            Ok(t) => t,
-            Err(_) => break, // channel closed, shut down
-        };
+    // Block until a scrub request arrives. Loop exits when the sender is dropped.
+    while let Ok(initial) = request_rx.recv() {
+        let mut target = initial;
         // Drain to latest request (discard stale ones)
         while let Ok(t) = request_rx.try_recv() {
             target = t;
         }
 
         // Decide: decode forward (fast) or seek (needed for backward / large jumps)
-        let need_seek = match last_pos {
-            Some(pos) if target > pos && target - pos <= 60 => false,
-            _ => true,
-        };
+        let need_seek = !matches!(last_pos, Some(pos) if target > pos && target - pos <= 60);
 
         if need_seek {
             let target_us = (target as f64 / fps_f64 * 1_000_000.0) as i64;

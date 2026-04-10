@@ -558,10 +558,7 @@ impl VideoPlayer {
     /// Poll for a completed scrub frame from the persistent worker.
     pub fn poll_scrub_frame(&mut self) -> Option<egui::ColorImage> {
         let rx = self.scrub_result_rx.as_ref()?;
-        match rx.try_recv() {
-            Ok(image) => image,
-            Err(_) => None,
-        }
+        rx.try_recv().ok().flatten()
     }
 
     /// Drain pending scrub results. The worker stays alive for reuse.
