@@ -417,6 +417,12 @@ impl DecodeLruCache {
         self.entries.insert(episode_index, image);
         self.order.push_back(episode_index);
     }
+
+    /// Remove all cached entries.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.order.clear();
+    }
 }
 
 // ============================================================================

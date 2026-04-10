@@ -276,6 +276,66 @@ impl App {
         ctx.request_repaint();
     }
 
+    /// Switch camera to a new video_key_index. Rebuilds video paths, episode cache,
+    /// and the active player or grid panes to show the new camera.
+    pub(crate) fn switch_camera(&mut self, new_index: usize, ctx: &egui::Context) {
+        let ds = match &self.dataset {
+            Some(ds) => ds,
+            None => return,
+        };
+        let total_cameras = ds.info.video_keys.len();
+        if total_cameras == 0 || new_index >= total_cameras {
+            return;
+        }
+        if new_index == self.current_video_key_index {
+            return;
+        }
+
+        let camera_name = ds.info.video_keys[new_index].clone();
+        log::info!("Switching camera to [{}] {}", new_index, camera_name);
+
+        self.current_video_key_index = new_index;
+        self.rebuild_video_paths();
+
+        // Invalidate episode thumbnail caches (they were for the old camera)
+        self.decode_cache.clear();
+        self.episode_cache = None;
+        self.init_cache(ctx);
+
+        if self.grid_view.is_some() {
+            // Rebuild grid with new camera paths
+            let ds = self.dataset.as_ref().unwrap();
+            let gds = GridDataset {
+                video_paths: &self.video_paths,
+                seek_ranges: &self.seek_ranges,
+                episodes: &ds.episodes,
+                fps: ds.info.fps,
+            };
+            if let Some(grid) = &mut self.grid_view {
+                let start = grid.start_episode;
+                *grid = GridView::new(ctx, grid.cols, grid.rows, start, &gds);
+            }
+        } else if self.viewing_video {
+            // Re-enter video mode to reload the player with the new camera
+            self.enter_video_mode(ctx);
+        }
+    }
+
+    /// Cycle camera forward (+1) or backward (-1).
+    pub(crate) fn cycle_camera(&mut self, delta: isize, ctx: &egui::Context) {
+        let total = self
+            .dataset
+            .as_ref()
+            .map(|ds| ds.info.video_keys.len())
+            .unwrap_or(0);
+        if total <= 1 {
+            return;
+        }
+        let current = self.current_video_key_index as isize;
+        let new_idx = ((current + delta).rem_euclid(total as isize)) as usize;
+        self.switch_camera(new_idx, ctx);
+    }
+
     /// Toggle between single-video and grid view.
     pub(crate) fn toggle_grid_view(&mut self, ctx: &egui::Context) {
         if self.grid_view.is_some() {

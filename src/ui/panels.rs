@@ -246,17 +246,44 @@ impl App {
             }
 
             if ds.info.video_keys.len() > 1 {
+                let camera_names: Vec<(usize, String)> = ds
+                    .info
+                    .video_keys
+                    .iter()
+                    .enumerate()
+                    .map(|(i, k)| {
+                        let name = k.strip_prefix("observation.images.").unwrap_or(k);
+                        (i, name.to_string())
+                    })
+                    .collect();
+                let current_display = camera_names
+                    .iter()
+                    .find(|(i, _)| *i == self.current_video_key_index)
+                    .map(|(_, name)| name.as_str())
+                    .unwrap_or("unknown");
+
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("Camera:").color(self.theme.muted));
-                    let current_key = ds
-                        .info
-                        .video_keys
-                        .get(self.current_video_key_index)
-                        .cloned()
-                        .unwrap_or_default();
-                    let display_name = current_key
-                        .strip_prefix("observation.images.")
-                        .unwrap_or(&current_key);
+                    let mut selected = self.current_video_key_index;
+                    egui::ComboBox::from_id_salt("camera_select")
+                        .selected_text(current_display)
+                        .width(100.0)
+                        .show_ui(ui, |ui| {
+                            for (idx, name) in &camera_names {
+                                ui.selectable_value(&mut selected, *idx, name);
+                            }
+                        });
+                    if selected != self.current_video_key_index {
+                        self.pending_camera_switch = Some(selected);
+                    }
+                });
+            } else if !ds.info.video_keys.is_empty() {
+                let current_key = &ds.info.video_keys[0];
+                let display_name = current_key
+                    .strip_prefix("observation.images.")
+                    .unwrap_or(current_key);
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Camera:").color(self.theme.muted));
                     ui.label(display_name);
                 });
             }
@@ -761,11 +788,31 @@ impl App {
                     .color(dim),
                 );
 
+                // Show current camera name if multiple cameras exist
+                if let Some(ds) = &self.dataset {
+                    if ds.info.video_keys.len() > 1 {
+                        let cam = ds.info.video_keys
+                            .get(self.current_video_key_index)
+                            .map(|k| k.strip_prefix("observation.images.").unwrap_or(k))
+                            .unwrap_or("?");
+                        ui.separator();
+                        ui.label(
+                            egui::RichText::new(cam)
+                                .font(font.clone())
+                                .color(bright),
+                        );
+                    }
+                }
+
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let hint = if self.robot_kinematics.is_some() {
-                        "[G] exit  [T] trajectory  [+/-] resize  [←/→] page"
-                    } else {
-                        "[G] exit  [+/-] resize  [←/→] page"
+                    let has_multi_cam = self.dataset.as_ref()
+                        .map(|ds| ds.info.video_keys.len() > 1)
+                        .unwrap_or(false);
+                    let hint = match (self.robot_kinematics.is_some(), has_multi_cam) {
+                        (true, true) => "[G] exit  [C] camera  [T] trajectory  [+/-] resize  [←/→] page",
+                        (true, false) => "[G] exit  [T] trajectory  [+/-] resize  [←/→] page",
+                        (false, true) => "[G] exit  [C] camera  [+/-] resize  [←/→] page",
+                        (false, false) => "[G] exit  [+/-] resize  [←/→] page",
                     };
                     ui.label(
                         egui::RichText::new(hint)

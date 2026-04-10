@@ -67,6 +67,9 @@ pub struct App {
     // Mode
     pub(crate) annotate_mode: bool,
 
+    // Pending actions from UI panels (applied in update loop where ctx is available)
+    pub(crate) pending_camera_switch: Option<usize>,
+
     // UI
     pub(crate) theme: UiTheme,
     pub(crate) perf: PerfTracker,
@@ -113,6 +116,7 @@ impl App {
             show_trajectory: true,
             state_pos_indices: Vec::new(),
             urdf_override,
+            pending_camera_switch: None,
             annotate_mode: annotate,
             theme: UiTheme::teal_dark(),
             perf: PerfTracker::new(),
@@ -143,21 +147,6 @@ impl App {
                     .unwrap_or(0);
                 self.current_video_key_index = wrist_idx;
 
-                let video_key = ds.info.video_keys.get(wrist_idx).cloned().unwrap_or_default();
-                self.video_paths = ds
-                    .episodes
-                    .iter()
-                    .map(|ep| ds.video_path(ep.episode_index, &video_key))
-                    .collect();
-                self.seek_ranges = ds
-                    .episodes
-                    .iter()
-                    .map(|ep| {
-                        let (from, to) = ds.episode_time_range(ep.episode_index, &video_key);
-                        if to > from { Some((from, to)) } else { None }
-                    })
-                    .collect();
-
                 // Try to load robot kinematics for EE trajectory visualization
                 self.robot_kinematics = None;
                 self.trajectory_cache = TrajectoryCache::new(100);
@@ -185,6 +174,7 @@ impl App {
                 }
 
                 self.dataset = Some(ds);
+                self.rebuild_video_paths();
                 self.current_episode = 0;
                 self.current_texture = None;
                 self.loading_error = None;
@@ -241,6 +231,34 @@ impl App {
             "tracelr".to_string()
         };
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+    }
+
+    /// Rebuild `video_paths` and `seek_ranges` for the current `current_video_key_index`.
+    /// Call this after changing the camera selection.
+    pub(crate) fn rebuild_video_paths(&mut self) {
+        let ds = match &self.dataset {
+            Some(ds) => ds,
+            None => return,
+        };
+        let video_key = ds
+            .info
+            .video_keys
+            .get(self.current_video_key_index)
+            .cloned()
+            .unwrap_or_default();
+        self.video_paths = ds
+            .episodes
+            .iter()
+            .map(|ep| ds.video_path(ep.episode_index, &video_key))
+            .collect();
+        self.seek_ranges = ds
+            .episodes
+            .iter()
+            .map(|ep| {
+                let (from, to) = ds.episode_time_range(ep.episode_index, &video_key);
+                if to > from { Some((from, to)) } else { None }
+            })
+            .collect();
     }
 
     pub(crate) fn episode_seek_range(&self) -> Option<(f64, f64)> {
@@ -314,6 +332,12 @@ impl eframe::App for App {
 
         self.handle_dropped_files(ctx);
         self.handle_keyboard(ctx);
+
+        // Apply deferred camera switch (requested by UI panels that lack ctx)
+        if let Some(new_idx) = self.pending_camera_switch.take() {
+            self.switch_camera(new_idx, ctx);
+        }
+
         self.update_title(ctx);
 
         // Menu bar

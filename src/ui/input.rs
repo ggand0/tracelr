@@ -14,6 +14,8 @@ impl App {
 
         let mut g_pressed = false;
         let mut t_pressed = false;
+        let mut c_pressed = false;
+        let mut shift_c_pressed = false;
         let mut enter_pressed = false;
         let mut escape_pressed = false;
         let mut space_pressed = false;
@@ -23,6 +25,8 @@ impl App {
         ctx.input(|i| {
             g_pressed = i.key_pressed(egui::Key::G);
             t_pressed = i.key_pressed(egui::Key::T);
+            c_pressed = i.key_pressed(egui::Key::C) && !i.modifiers.shift;
+            shift_c_pressed = i.key_pressed(egui::Key::C) && i.modifiers.shift;
             enter_pressed = i.key_pressed(egui::Key::Enter);
             escape_pressed = i.key_pressed(egui::Key::Escape);
             space_pressed = i.key_pressed(egui::Key::Space);
@@ -61,6 +65,16 @@ impl App {
         // T toggles trajectory panel
         if t_pressed && self.robot_kinematics.is_some() {
             self.show_trajectory = !self.show_trajectory;
+            return;
+        }
+
+        // C / Shift+C cycles camera
+        if c_pressed {
+            self.cycle_camera(1, ctx);
+            return;
+        }
+        if shift_c_pressed {
+            self.cycle_camera(-1, ctx);
             return;
         }
 
