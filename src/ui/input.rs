@@ -16,6 +16,7 @@ impl App {
         let mut t_pressed = false;
         let mut c_pressed = false;
         let mut shift_c_pressed = false;
+        let mut m_pressed = false;
         let mut enter_pressed = false;
         let mut escape_pressed = false;
         let mut space_pressed = false;
@@ -27,6 +28,7 @@ impl App {
             t_pressed = i.key_pressed(egui::Key::T);
             c_pressed = i.key_pressed(egui::Key::C) && !i.modifiers.shift;
             shift_c_pressed = i.key_pressed(egui::Key::C) && i.modifiers.shift;
+            m_pressed = i.key_pressed(egui::Key::M);
             enter_pressed = i.key_pressed(egui::Key::Enter);
             escape_pressed = i.key_pressed(egui::Key::Escape);
             space_pressed = i.key_pressed(egui::Key::Space);
@@ -68,18 +70,33 @@ impl App {
             return;
         }
 
-        // C / Shift+C cycles camera
-        if c_pressed {
-            self.cycle_camera(1, ctx);
-            return;
+        // C / Shift+C cycles camera (not in multi-camera mode where all cameras are shown)
+        let in_multi_camera = self.grid_view.as_ref()
+            .map(|g| g.mode == crate::grid::GridMode::MultiCamera)
+            .unwrap_or(false);
+        if !in_multi_camera {
+            if c_pressed {
+                self.cycle_camera(1, ctx);
+                return;
+            }
+            if shift_c_pressed {
+                self.cycle_camera(-1, ctx);
+                return;
+            }
         }
-        if shift_c_pressed {
-            self.cycle_camera(-1, ctx);
+
+        // M toggles multi-camera view
+        if m_pressed {
+            self.toggle_multi_camera(ctx);
             return;
         }
 
         // Grid mode keyboard
         if self.grid_view.is_some() {
+            let is_multi_camera = self.grid_view.as_ref()
+                .map(|g| g.mode == crate::grid::GridMode::MultiCamera)
+                .unwrap_or(false);
+
             if space_pressed {
                 if let Some(grid) = &mut self.grid_view {
                     grid.toggle_playing();
@@ -87,16 +104,19 @@ impl App {
             }
             if escape_pressed {
                 self.grid_view = None;
+                self.enter_video_mode(ctx);
                 return;
             }
-            // +/- resize grid
-            if plus_pressed {
-                self.grid_resize(1, ctx);
+            // +/- resize grid (multi-episode only, multi-camera auto-sizes)
+            if !is_multi_camera {
+                if plus_pressed {
+                    self.grid_resize(1, ctx);
+                }
+                if minus_pressed {
+                    self.grid_resize(-1, ctx);
+                }
+                self.handle_keyboard_grid(ctx);
             }
-            if minus_pressed {
-                self.grid_resize(-1, ctx);
-            }
-            self.handle_keyboard_grid(ctx);
             return;
         }
 

@@ -47,9 +47,27 @@ impl App {
 
                 ui.menu_button("View", |ui| {
                     let in_grid = self.grid_view.is_some();
+                    let is_multi_camera = self.grid_view.as_ref()
+                        .map(|g| g.mode == crate::grid::GridMode::MultiCamera)
+                        .unwrap_or(false);
+                    let has_multi_cam = self.dataset.as_ref()
+                        .map(|ds| ds.info.video_keys.len() > 1)
+                        .unwrap_or(false);
+
                     if ui.button(if in_grid { "Single View  [G]" } else { "Grid View  [G]" }).clicked() {
                         ui.close_menu();
                         self.toggle_grid_view(ctx);
+                    }
+                    if has_multi_cam {
+                        let label = if is_multi_camera {
+                            "Single Camera  [M]"
+                        } else {
+                            "Multi-Camera  [M]"
+                        };
+                        if ui.button(label).clicked() {
+                            ui.close_menu();
+                            self.toggle_multi_camera(ctx);
+                        }
                     }
                     ui.separator();
                     ui.label(
@@ -129,10 +147,18 @@ impl App {
         let mut navigate_to = None;
 
         // Determine which episodes are highlighted (single or grid range)
-        let grid_range = self.grid_view.as_ref().map(|g| {
-            let end = g.start_episode + g.pane_count();
-            g.start_episode..end
-        });
+        let is_multi_camera = self.grid_view.as_ref()
+            .map(|g| g.mode == crate::grid::GridMode::MultiCamera)
+            .unwrap_or(false);
+        let grid_range = if is_multi_camera {
+            // Multi-camera: highlight only the fixed episode
+            self.grid_view.as_ref().map(|g| g.fixed_episode..g.fixed_episode + 1)
+        } else {
+            self.grid_view.as_ref().map(|g| {
+                let end = g.start_episode + g.pane_count();
+                g.start_episode..end
+            })
+        };
 
         let should_scroll = self.scroll_to_selected;
         let mut scroll_rect: Option<egui::Rect> = None;
@@ -200,7 +226,20 @@ impl App {
         }
 
         if let Some(ep) = navigate_to {
-            if self.grid_view.is_some() {
+            let is_multi_camera = self.grid_view.as_ref()
+                .map(|g| g.mode == crate::grid::GridMode::MultiCamera)
+                .unwrap_or(false);
+            if is_multi_camera {
+                // Rebuild multi-camera grid for the new episode
+                self.current_episode = ep;
+                if let Some(ds) = &self.dataset {
+                    let grid = crate::grid::GridView::new_multi_camera(
+                        ctx, ep, ds, &self.selected_cameras,
+                    );
+                    self.grid_view = Some(grid);
+                }
+                self.scroll_to_selected = true;
+            } else if self.grid_view.is_some() {
                 self.grid_jump_to(ep, ctx);
             } else {
                 if self.viewing_video {
@@ -293,6 +332,39 @@ impl App {
                     ui.label(egui::RichText::new("Task:").color(self.theme.muted));
                     ui.label(&ep.tasks[0]);
                 });
+            }
+
+            // Camera checkboxes for multi-camera mode
+            let is_multi_camera = self.grid_view.as_ref()
+                .map(|g| g.mode == crate::grid::GridMode::MultiCamera)
+                .unwrap_or(false);
+            if ds.info.video_keys.len() > 1 && is_multi_camera {
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new("Cameras")
+                        .strong()
+                        .color(self.theme.heading),
+                );
+                ui.separator();
+                let mut changed = false;
+                for (i, key) in ds.info.video_keys.iter().enumerate() {
+                    let display = key.strip_prefix("observation.images.").unwrap_or(key);
+                    let mut checked = self.selected_cameras.get(i).copied().unwrap_or(true);
+                    if ui.checkbox(&mut checked, display).changed() {
+                        // Ensure at least one camera stays selected
+                        let other_selected = self.selected_cameras.iter().enumerate()
+                            .any(|(j, &v)| j != i && v);
+                        if checked || other_selected {
+                            if let Some(slot) = self.selected_cameras.get_mut(i) {
+                                *slot = checked;
+                            }
+                            changed = true;
+                        }
+                    }
+                }
+                if changed {
+                    self.pending_multi_camera_rebuild = true;
+                }
             }
         }
 
@@ -757,6 +829,8 @@ impl App {
 
         ui.horizontal(|ui| {
             if let Some(grid) = &self.grid_view {
+                let is_multi_camera = grid.mode == crate::grid::GridMode::MultiCamera;
+
                 let playing_icon = if grid.playing { "\u{23f8}" } else { "\u{25b6}" };
                 ui.label(
                     egui::RichText::new(playing_icon)
@@ -764,55 +838,73 @@ impl App {
                         .color(bright),
                 );
 
-                ui.label(
-                    egui::RichText::new(format!(
-                        "Grid {}x{}",
-                        grid.cols, grid.rows,
-                    ))
-                    .font(font.clone())
-                    .color(bright),
-                );
+                if is_multi_camera {
+                    // Multi-camera footer: show episode and camera count
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "ep {:03}  {} cameras",
+                            grid.fixed_episode,
+                            grid.pane_count(),
+                        ))
+                        .font(font.clone())
+                        .color(bright),
+                    );
+                } else {
+                    // Multi-episode footer: show grid size and episode range
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Grid {}x{}",
+                            grid.cols, grid.rows,
+                        ))
+                        .font(font.clone())
+                        .color(bright),
+                    );
 
-                ui.separator();
+                    ui.separator();
 
-                let total = self.video_paths.len();
-                let end = (grid.start_episode + grid.pane_count()).min(total);
-                ui.label(
-                    egui::RichText::new(format!(
-                        "ep {}-{} / {}",
-                        grid.start_episode,
-                        end.saturating_sub(1),
-                        total,
-                    ))
-                    .font(font.clone())
-                    .color(dim),
-                );
+                    let total = self.video_paths.len();
+                    let end = (grid.start_episode + grid.pane_count()).min(total);
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "ep {}-{} / {}",
+                            grid.start_episode,
+                            end.saturating_sub(1),
+                            total,
+                        ))
+                        .font(font.clone())
+                        .color(dim),
+                    );
 
-                // Show current camera name if multiple cameras exist
-                if let Some(ds) = &self.dataset {
-                    if ds.info.video_keys.len() > 1 {
-                        let cam = ds.info.video_keys
-                            .get(self.current_video_key_index)
-                            .map(|k| k.strip_prefix("observation.images.").unwrap_or(k))
-                            .unwrap_or("?");
-                        ui.separator();
-                        ui.label(
-                            egui::RichText::new(cam)
-                                .font(font.clone())
-                                .color(bright),
-                        );
+                    // Show current camera name if multiple cameras exist
+                    if let Some(ds) = &self.dataset {
+                        if ds.info.video_keys.len() > 1 {
+                            let cam = ds.info.video_keys
+                                .get(self.current_video_key_index)
+                                .map(|k| k.strip_prefix("observation.images.").unwrap_or(k))
+                                .unwrap_or("?");
+                            ui.separator();
+                            ui.label(
+                                egui::RichText::new(cam)
+                                    .font(font.clone())
+                                    .color(bright),
+                            );
+                        }
                     }
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let has_multi_cam = self.dataset.as_ref()
-                        .map(|ds| ds.info.video_keys.len() > 1)
-                        .unwrap_or(false);
-                    let hint = match (self.robot_kinematics.is_some(), has_multi_cam) {
-                        (true, true) => "[G] exit  [C] camera  [T] trajectory  [+/-] resize  [←/→] page",
-                        (true, false) => "[G] exit  [T] trajectory  [+/-] resize  [←/→] page",
-                        (false, true) => "[G] exit  [C] camera  [+/-] resize  [←/→] page",
-                        (false, false) => "[G] exit  [+/-] resize  [←/→] page",
+                    let hint = if is_multi_camera {
+                        "[M] exit  [C] camera"
+                    } else {
+                        let has_multi_cam = self.dataset.as_ref()
+                            .map(|ds| ds.info.video_keys.len() > 1)
+                            .unwrap_or(false);
+                        match (self.robot_kinematics.is_some(), has_multi_cam) {
+                            (true, true) => "[G] exit  [C] camera  [T] trajectory  [+/-] resize  [←/→] page",
+                            (true, false) => "[G] exit  [T] trajectory  [+/-] resize  [←/→] page",
+                            (false, true) => "[G] exit  [C] camera  [+/-] resize  [←/→] page",
+                            (false, false) => "[G] exit  [+/-] resize  [←/→] page",
+                        }
                     };
                     ui.label(
                         egui::RichText::new(hint)

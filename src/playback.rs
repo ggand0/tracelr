@@ -4,7 +4,7 @@ use eframe::egui;
 
 use crate::app::App;
 use crate::cache::{EpisodeCache, VideoPlayer};
-use crate::grid::{GridDataset, GridView};
+use crate::grid::{GridDataset, GridMode, GridView};
 use crate::video;
 
 impl App {
@@ -336,7 +336,8 @@ impl App {
         self.switch_camera(new_idx, ctx);
     }
 
-    /// Toggle between single-video and grid view.
+    /// Toggle between single-video and multi-episode grid view.
+    /// If currently in multi-camera grid, exits to single-video first.
     pub(crate) fn toggle_grid_view(&mut self, ctx: &egui::Context) {
         if self.grid_view.is_some() {
             self.grid_view = None;
@@ -351,6 +352,36 @@ impl App {
                     fps: ds.info.fps,
                 };
                 let grid = GridView::new(ctx, self.grid_cols, self.grid_rows, self.current_episode, &gds);
+                self.grid_view = Some(grid);
+            }
+        }
+    }
+
+    /// Toggle multi-camera grid view for the current episode.
+    /// From single-video: enter multi-camera grid.
+    /// From multi-camera grid: exit to single-video.
+    /// From multi-episode grid: no-op (use G to exit first).
+    pub(crate) fn toggle_multi_camera(&mut self, ctx: &egui::Context) {
+        if let Some(grid) = &self.grid_view {
+            if grid.mode == GridMode::MultiCamera {
+                // Exit multi-camera → single-video
+                self.grid_view = None;
+                self.enter_video_mode(ctx);
+            }
+            // In multi-episode grid, M is a no-op
+            return;
+        }
+
+        // Enter multi-camera grid from single-video mode
+        self.exit_video_mode();
+        if let Some(ds) = &self.dataset {
+            if ds.info.video_keys.len() > 1 {
+                let grid = GridView::new_multi_camera(
+                    ctx,
+                    self.current_episode,
+                    ds,
+                    &self.selected_cameras,
+                );
                 self.grid_view = Some(grid);
             }
         }
