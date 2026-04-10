@@ -151,9 +151,7 @@ impl GridView {
             let video_path = ds.video_path(episode_index, video_key);
             let (from, to) = ds.episode_time_range(episode_index, video_key);
             let seek_range = if to > from { Some((from, to)) } else { None };
-            let display_name = video_key
-                .strip_prefix("observation.images.")
-                .unwrap_or(video_key);
+            let display_name = crate::dataset::camera_display_name(video_key);
             if let Some(pane) = Self::create_pane(
                 ctx, episode_index, video_key, display_name,
                 &video_path, ep.length, seek_range, ds.info.fps,

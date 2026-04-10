@@ -241,6 +241,13 @@ impl LeRobotDataset {
     }
 }
 
+/// Strip the "observation.images." prefix from a video key for display.
+pub(crate) fn camera_display_name(video_key: &str) -> &str {
+    video_key
+        .strip_prefix("observation.images.")
+        .unwrap_or(video_key)
+}
+
 /// Load episodes from v2.1 format (episodes.jsonl).
 fn load_episodes_v2(meta_dir: &Path, total_episodes: usize) -> Result<Vec<EpisodeMeta>, String> {
     let episodes_path = meta_dir.join("episodes.jsonl");

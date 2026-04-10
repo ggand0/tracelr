@@ -4,7 +4,7 @@ use eframe::egui;
 
 use crate::app::App;
 use crate::cache::{EpisodeCache, VideoPlayer};
-use crate::grid::{GridDataset, GridMode, GridView};
+use crate::grid::{GridMode, GridView};
 use crate::video;
 
 impl App {
@@ -304,16 +304,11 @@ impl App {
 
         if self.grid_view.is_some() {
             // Rebuild grid with new camera paths
-            let ds = self.dataset.as_ref().unwrap();
-            let gds = GridDataset {
-                video_paths: &self.video_paths,
-                seek_ranges: &self.seek_ranges,
-                episodes: &ds.episodes,
-                fps: ds.info.fps,
-            };
-            if let Some(grid) = &mut self.grid_view {
-                let start = grid.start_episode;
-                *grid = GridView::new(ctx, grid.cols, grid.rows, start, &gds);
+            if let Some(gds) = grid_dataset!(self) {
+                if let Some(grid) = &mut self.grid_view {
+                    let start = grid.start_episode;
+                    *grid = GridView::new(ctx, grid.cols, grid.rows, start, &gds);
+                }
             }
         } else if self.viewing_video {
             // Re-enter video mode to reload the player with the new camera
@@ -344,13 +339,7 @@ impl App {
             self.enter_video_mode(ctx);
         } else {
             self.exit_video_mode();
-            if let Some(ds) = &self.dataset {
-                let gds = GridDataset {
-                    video_paths: &self.video_paths,
-                    seek_ranges: &self.seek_ranges,
-                    episodes: &ds.episodes,
-                    fps: ds.info.fps,
-                };
+            if let Some(gds) = grid_dataset!(self) {
                 let grid = GridView::new(ctx, self.grid_cols, self.grid_rows, self.current_episode, &gds);
                 self.grid_view = Some(grid);
             }
@@ -397,13 +386,7 @@ impl App {
         self.grid_cols = new_size;
         self.grid_rows = new_size;
 
-        if let Some(ds) = &self.dataset {
-            let gds = GridDataset {
-                video_paths: &self.video_paths,
-                seek_ranges: &self.seek_ranges,
-                episodes: &ds.episodes,
-                fps: ds.info.fps,
-            };
+        if let Some(gds) = grid_dataset!(self) {
             if let Some(grid) = &mut self.grid_view {
                 grid.resize(new_size, new_size, ctx, &gds);
             }
@@ -412,13 +395,7 @@ impl App {
 
     /// Jump the grid to start at a specific episode.
     pub(crate) fn grid_jump_to(&mut self, episode: usize, ctx: &egui::Context) {
-        if let Some(ds) = &self.dataset {
-            let gds = GridDataset {
-                video_paths: &self.video_paths,
-                seek_ranges: &self.seek_ranges,
-                episodes: &ds.episodes,
-                fps: ds.info.fps,
-            };
+        if let Some(gds) = grid_dataset!(self) {
             if let Some(grid) = &mut self.grid_view {
                 grid.jump_to(episode, ctx, &gds);
             }

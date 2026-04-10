@@ -3,6 +3,20 @@ use std::path::PathBuf;
 use clap::Parser;
 use eframe::egui;
 
+/// Build a GridDataset from App fields. Uses direct field access so
+/// the borrow checker can track individual borrows (unlike a method,
+/// which borrows all of `self`).
+macro_rules! grid_dataset {
+    ($self:expr) => {
+        $self.dataset.as_ref().map(|ds| crate::grid::GridDataset {
+            video_paths: &$self.video_paths,
+            seek_ranges: &$self.seek_ranges,
+            episodes: &ds.episodes,
+            fps: ds.info.fps,
+        })
+    };
+}
+
 mod annotation;
 mod app;
 mod build_info;

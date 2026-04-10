@@ -71,9 +71,7 @@ impl App {
         }
 
         // C / Shift+C cycles camera (not in multi-camera mode where all cameras are shown)
-        let in_multi_camera = self.grid_view.as_ref()
-            .map(|g| g.mode == crate::grid::GridMode::MultiCamera)
-            .unwrap_or(false);
+        let in_multi_camera = self.is_multi_camera();
         if !in_multi_camera {
             if c_pressed {
                 self.cycle_camera(1, ctx);
@@ -234,13 +232,7 @@ impl App {
         });
 
         if let Some(delta) = page_delta {
-            if let Some(ds) = &self.dataset {
-                let gds = crate::grid::GridDataset {
-                    video_paths: &self.video_paths,
-                    seek_ranges: &self.seek_ranges,
-                    episodes: &ds.episodes,
-                    fps: ds.info.fps,
-                };
+            if let Some(gds) = grid_dataset!(self) {
                 if let Some(grid) = &mut self.grid_view {
                     grid.navigate_page(delta, ctx, &gds);
                     self.scroll_to_selected = true;

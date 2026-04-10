@@ -47,9 +47,7 @@ impl App {
 
                 ui.menu_button("View", |ui| {
                     let in_grid = self.grid_view.is_some();
-                    let is_multi_camera = self.grid_view.as_ref()
-                        .map(|g| g.mode == crate::grid::GridMode::MultiCamera)
-                        .unwrap_or(false);
+                    let is_multi_camera = self.is_multi_camera();
                     let has_multi_cam = self.dataset.as_ref()
                         .map(|ds| ds.info.video_keys.len() > 1)
                         .unwrap_or(false);
@@ -81,13 +79,7 @@ impl App {
                         if !in_grid {
                             self.toggle_grid_view(ctx);
                         }
-                        if let Some(ds) = &self.dataset {
-                            let gds = crate::grid::GridDataset {
-                                video_paths: &self.video_paths,
-                                seek_ranges: &self.seek_ranges,
-                                episodes: &ds.episodes,
-                                fps: ds.info.fps,
-                            };
+                        if let Some(gds) = grid_dataset!(self) {
                             if let Some(grid) = &mut self.grid_view {
                                 grid.resize(cols, rows, ctx, &gds);
                             }
@@ -226,9 +218,7 @@ impl App {
         }
 
         if let Some(ep) = navigate_to {
-            let is_multi_camera = self.grid_view.as_ref()
-                .map(|g| g.mode == crate::grid::GridMode::MultiCamera)
-                .unwrap_or(false);
+            let is_multi_camera = self.is_multi_camera();
             if is_multi_camera {
                 // Rebuild multi-camera grid for the new episode
                 self.current_episode = ep;
@@ -291,8 +281,7 @@ impl App {
                     .iter()
                     .enumerate()
                     .map(|(i, k)| {
-                        let name = k.strip_prefix("observation.images.").unwrap_or(k);
-                        (i, name.to_string())
+                        (i, crate::dataset::camera_display_name(k).to_string())
                     })
                     .collect();
                 let current_display = camera_names
@@ -317,10 +306,7 @@ impl App {
                     }
                 });
             } else if !ds.info.video_keys.is_empty() {
-                let current_key = &ds.info.video_keys[0];
-                let display_name = current_key
-                    .strip_prefix("observation.images.")
-                    .unwrap_or(current_key);
+                let display_name = crate::dataset::camera_display_name(&ds.info.video_keys[0]);
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("Camera:").color(self.theme.muted));
                     ui.label(display_name);
@@ -335,9 +321,7 @@ impl App {
             }
 
             // Camera checkboxes for multi-camera mode
-            let is_multi_camera = self.grid_view.as_ref()
-                .map(|g| g.mode == crate::grid::GridMode::MultiCamera)
-                .unwrap_or(false);
+            let is_multi_camera = self.is_multi_camera();
             if ds.info.video_keys.len() > 1 && is_multi_camera {
                 ui.add_space(8.0);
                 ui.label(
@@ -348,7 +332,7 @@ impl App {
                 ui.separator();
                 let mut changed = false;
                 for (i, key) in ds.info.video_keys.iter().enumerate() {
-                    let display = key.strip_prefix("observation.images.").unwrap_or(key);
+                    let display = crate::dataset::camera_display_name(key);
                     let mut checked = self.selected_cameras.get(i).copied().unwrap_or(true);
                     if ui.checkbox(&mut checked, display).changed() {
                         // Ensure at least one camera stays selected
@@ -880,7 +864,7 @@ impl App {
                         if ds.info.video_keys.len() > 1 {
                             let cam = ds.info.video_keys
                                 .get(self.current_video_key_index)
-                                .map(|k| k.strip_prefix("observation.images.").unwrap_or(k))
+                                .map(|k| crate::dataset::camera_display_name(k))
                                 .unwrap_or("?");
                             ui.separator();
                             ui.label(

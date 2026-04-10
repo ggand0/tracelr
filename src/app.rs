@@ -15,6 +15,7 @@ use crate::trajectory_view::OrbitCamera;
 const CACHE_COUNT: usize = 5; // ±5 episodes = 11 total slots
 const LRU_CAPACITY: usize = 50;
 
+
 pub struct App {
     // Data
     pub(crate) dataset: Option<LeRobotDataset>,
@@ -267,6 +268,13 @@ impl App {
             .collect();
     }
 
+    /// Whether the grid is in multi-camera mode.
+    pub(crate) fn is_multi_camera(&self) -> bool {
+        self.grid_view.as_ref()
+            .map(|g| g.mode == crate::grid::GridMode::MultiCamera)
+            .unwrap_or(false)
+    }
+
     pub(crate) fn episode_seek_range(&self) -> Option<(f64, f64)> {
         let ds = self.dataset.as_ref()?;
         let vk = ds.info.video_keys.get(self.current_video_key_index)?;
@@ -362,9 +370,7 @@ impl eframe::App for App {
         self.show_menu_bar(ctx);
 
         let in_grid = self.grid_view.is_some();
-        let is_multi_camera = self.grid_view.as_ref()
-            .map(|g| g.mode == crate::grid::GridMode::MultiCamera)
-            .unwrap_or(false);
+        let is_multi_camera = self.is_multi_camera();
 
         // Left panel: episode list (always visible)
         egui::SidePanel::left("episode_list")
