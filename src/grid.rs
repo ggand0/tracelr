@@ -12,6 +12,9 @@ const PANE_LABEL_FONT_SIZE: f32 = 11.0;
 const PANE_BORDER_RADIUS: f32 = 2.0;
 const PANE_BORDER_WIDTH: f32 = 2.0;
 
+/// Maximum total panes in episode×camera matrix mode.
+const MAX_MATRIX_PANES: usize = 24;
+
 /// What the grid is displaying.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GridMode {
@@ -19,6 +22,8 @@ pub(crate) enum GridMode {
     MultiEpisode,
     /// One episode, multiple cameras.
     MultiCamera,
+    /// Multiple episodes × multiple cameras (rows=episodes, cols=cameras).
+    EpisodeCamera,
 }
 
 /// Dataset context needed to create grid panes.
@@ -33,7 +38,6 @@ pub(crate) struct GridDataset<'a> {
 struct GridPane {
     episode_index: usize,
     /// Which camera this pane shows (e.g. "observation.images.wrist").
-    /// Used in Feature 3 (episode × camera matrix) for column grouping.
     #[allow(dead_code)]
     video_key: String,
     /// Display label for the pane (e.g. "ep 001" or "wrist").
@@ -173,6 +177,68 @@ impl GridView {
             selected_panes: HashSet::new(),
             frame_slider_dragging: false,
         }
+    }
+
+    /// Create an episode × camera matrix grid.
+    /// Cols = selected cameras, rows = episode_rows (capped to available episodes and MAX_MATRIX_PANES).
+    pub fn new_episode_camera(
+        ctx: &egui::Context,
+        episode_rows: usize,
+        start_episode: usize,
+        ds: &crate::dataset::LeRobotDataset,
+        selected_cameras: &[bool],
+    ) -> Self {
+        let selected_keys: Vec<&str> = ds.info.video_keys.iter().enumerate()
+            .filter(|(i, _)| selected_cameras.get(*i).copied().unwrap_or(false))
+            .map(|(_, k)| k.as_str())
+            .collect();
+        let cam_count = selected_keys.len().max(1);
+        let max_rows = (MAX_MATRIX_PANES / cam_count).max(1);
+        let total_episodes = ds.episodes.len();
+        let available_rows = total_episodes.saturating_sub(start_episode);
+        let rows = episode_rows.min(max_rows).min(available_rows).max(1);
+        let cols = cam_count;
+
+        let mut panes = Vec::with_capacity(rows * cols);
+        for row in 0..rows {
+            let ep_idx = start_episode + row;
+            let ep = match ds.episodes.get(ep_idx) {
+                Some(ep) => ep,
+                None => break,
+            };
+            for &video_key in &selected_keys {
+                let video_path = ds.video_path(ep_idx, video_key);
+                let (from, to) = ds.episode_time_range(ep_idx, video_key);
+                let seek_range = if to > from { Some((from, to)) } else { None };
+                let cam_name = crate::dataset::camera_display_name(video_key);
+                let label = format!("ep {:03} {}", ep_idx, cam_name);
+                if let Some(pane) = Self::create_pane(
+                    ctx, ep_idx, video_key, &label,
+                    &video_path, ep.length, seek_range, ds.info.fps,
+                ) {
+                    panes.push(pane);
+                }
+            }
+        }
+
+        Self {
+            panes,
+            cols,
+            rows,
+            mode: GridMode::EpisodeCamera,
+            start_episode,
+            fixed_episode: start_episode,
+            playing: true,
+            last_frame_time: None,
+            fps: ds.info.fps,
+            selected_panes: HashSet::new(),
+            frame_slider_dragging: false,
+        }
+    }
+
+    /// Max episode rows allowed for the given camera count.
+    pub fn max_episode_rows(cam_count: usize) -> usize {
+        (MAX_MATRIX_PANES / cam_count.max(1)).max(1)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -368,6 +434,45 @@ impl GridView {
         self.cols = cols;
         self.rows = rows;
         self.rebuild(ctx, ds);
+    }
+
+    /// Page episodes in episode×camera matrix mode (shift by row count).
+    pub fn navigate_page_matrix(
+        &mut self,
+        delta: isize,
+        ctx: &egui::Context,
+        ds: &crate::dataset::LeRobotDataset,
+        selected_cameras: &[bool],
+    ) {
+        let total = ds.episodes.len();
+        if total == 0 {
+            return;
+        }
+        let new_start = if delta > 0 {
+            let s = self.start_episode + self.rows;
+            if s >= total { return; }
+            s
+        } else {
+            if self.start_episode == 0 { return; }
+            self.start_episode.saturating_sub(self.rows)
+        };
+        *self = Self::new_episode_camera(ctx, self.rows, new_start, ds, selected_cameras);
+    }
+
+    /// Resize episode rows in episode×camera matrix mode.
+    pub fn resize_episode_rows(
+        &mut self,
+        delta: isize,
+        ctx: &egui::Context,
+        ds: &crate::dataset::LeRobotDataset,
+        selected_cameras: &[bool],
+    ) {
+        let max_rows = Self::max_episode_rows(self.cols);
+        let new_rows = ((self.rows as isize) + delta).clamp(1, max_rows as isize) as usize;
+        if new_rows == self.rows {
+            return;
+        }
+        *self = Self::new_episode_camera(ctx, new_rows, self.start_episode, ds, selected_cameras);
     }
 
     /// Render the grid into the given UI area.

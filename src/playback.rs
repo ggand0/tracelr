@@ -346,19 +346,46 @@ impl App {
         }
     }
 
-    /// Toggle multi-camera grid view for the current episode.
-    /// From single-video: enter multi-camera grid.
-    /// From multi-camera grid: exit to single-video.
-    /// From multi-episode grid: no-op (use G to exit first).
+    /// Toggle multi-camera dimension.
+    /// - From single-video: enter multi-camera grid (one episode, all cameras).
+    /// - From multi-camera grid: exit to single-video.
+    /// - From multi-episode grid: enter episode×camera matrix (add camera dimension).
+    /// - From episode×camera matrix: return to multi-episode grid (remove camera dimension).
     pub(crate) fn toggle_multi_camera(&mut self, ctx: &egui::Context) {
         if let Some(grid) = &self.grid_view {
-            if grid.mode == GridMode::MultiCamera {
-                // Exit multi-camera → single-video
-                self.grid_view = None;
-                self.enter_video_mode(ctx);
+            match grid.mode {
+                GridMode::MultiCamera => {
+                    // Exit multi-camera → single-video
+                    self.grid_view = None;
+                    self.enter_video_mode(ctx);
+                    return;
+                }
+                GridMode::MultiEpisode => {
+                    // Add camera dimension → episode×camera matrix
+                    if let Some(ds) = &self.dataset {
+                        if ds.info.video_keys.len() > 1 {
+                            let start = grid.start_episode;
+                            let ep_rows = grid.rows.min(GridView::max_episode_rows(
+                                self.selected_cameras.iter().filter(|&&v| v).count(),
+                            ));
+                            let grid = GridView::new_episode_camera(
+                                ctx, ep_rows, start, ds, &self.selected_cameras,
+                            );
+                            self.grid_view = Some(grid);
+                        }
+                    }
+                    return;
+                }
+                GridMode::EpisodeCamera => {
+                    // Remove camera dimension → multi-episode grid
+                    let start = grid.start_episode;
+                    if let Some(gds) = grid_dataset!(self) {
+                        let grid = GridView::new(ctx, self.grid_cols, self.grid_rows, start, &gds);
+                        self.grid_view = Some(grid);
+                    }
+                    return;
+                }
             }
-            // In multi-episode grid, M is a no-op
-            return;
         }
 
         // Enter multi-camera grid from single-video mode

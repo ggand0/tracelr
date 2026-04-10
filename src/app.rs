@@ -268,10 +268,10 @@ impl App {
             .collect();
     }
 
-    /// Whether the grid is in multi-camera mode.
-    pub(crate) fn is_multi_camera(&self) -> bool {
+    /// Whether the grid shows multiple cameras (MultiCamera or EpisodeCamera).
+    pub(crate) fn is_camera_grid(&self) -> bool {
         self.grid_view.as_ref()
-            .map(|g| g.mode == crate::grid::GridMode::MultiCamera)
+            .map(|g| matches!(g.mode, crate::grid::GridMode::MultiCamera | crate::grid::GridMode::EpisodeCamera))
             .unwrap_or(false)
     }
 
@@ -354,12 +354,22 @@ impl eframe::App for App {
         if self.pending_multi_camera_rebuild {
             self.pending_multi_camera_rebuild = false;
             if let Some(grid) = &self.grid_view {
-                if grid.mode == crate::grid::GridMode::MultiCamera {
-                    let ep = grid.fixed_episode;
-                    if let Some(ds) = &self.dataset {
-                        let grid = GridView::new_multi_camera(ctx, ep, ds, &self.selected_cameras);
-                        self.grid_view = Some(grid);
+                match grid.mode {
+                    crate::grid::GridMode::MultiCamera => {
+                        let ep = grid.fixed_episode;
+                        if let Some(ds) = &self.dataset {
+                            let grid = GridView::new_multi_camera(ctx, ep, ds, &self.selected_cameras);
+                            self.grid_view = Some(grid);
+                        }
                     }
+                    crate::grid::GridMode::EpisodeCamera => {
+                        let (rows, start) = (grid.rows, grid.start_episode);
+                        if let Some(ds) = &self.dataset {
+                            let grid = GridView::new_episode_camera(ctx, rows, start, ds, &self.selected_cameras);
+                            self.grid_view = Some(grid);
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -370,7 +380,7 @@ impl eframe::App for App {
         self.show_menu_bar(ctx);
 
         let in_grid = self.grid_view.is_some();
-        let is_multi_camera = self.is_multi_camera();
+        let is_multi_camera = self.is_camera_grid();
 
         // Left panel: episode list (always visible)
         egui::SidePanel::left("episode_list")

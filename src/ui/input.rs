@@ -71,7 +71,7 @@ impl App {
         }
 
         // C / Shift+C cycles camera (not in multi-camera mode where all cameras are shown)
-        let in_multi_camera = self.is_multi_camera();
+        let in_multi_camera = self.is_camera_grid();
         if !in_multi_camera {
             if c_pressed {
                 self.cycle_camera(1, ctx);
@@ -91,9 +91,9 @@ impl App {
 
         // Grid mode keyboard
         if self.grid_view.is_some() {
-            let is_multi_camera = self.grid_view.as_ref()
-                .map(|g| g.mode == crate::grid::GridMode::MultiCamera)
-                .unwrap_or(false);
+            let grid_mode = self.grid_view.as_ref()
+                .map(|g| g.mode)
+                .unwrap_or(crate::grid::GridMode::MultiEpisode);
 
             if space_pressed {
                 if let Some(grid) = &mut self.grid_view {
@@ -105,15 +105,33 @@ impl App {
                 self.enter_video_mode(ctx);
                 return;
             }
-            // +/- resize grid (multi-episode only, multi-camera auto-sizes)
-            if !is_multi_camera {
-                if plus_pressed {
-                    self.grid_resize(1, ctx);
+
+            match grid_mode {
+                crate::grid::GridMode::MultiEpisode => {
+                    if plus_pressed {
+                        self.grid_resize(1, ctx);
+                    }
+                    if minus_pressed {
+                        self.grid_resize(-1, ctx);
+                    }
+                    self.handle_keyboard_grid(ctx);
                 }
-                if minus_pressed {
-                    self.grid_resize(-1, ctx);
+                crate::grid::GridMode::EpisodeCamera => {
+                    // +/- adjusts episode row count
+                    if plus_pressed || minus_pressed {
+                        let delta = if plus_pressed { 1 } else { -1 };
+                        if let Some(ds) = &self.dataset {
+                            if let Some(grid) = &mut self.grid_view {
+                                grid.resize_episode_rows(delta, ctx, ds, &self.selected_cameras);
+                            }
+                        }
+                    }
+                    // Left/Right pages through episodes
+                    self.handle_keyboard_grid_matrix(ctx);
                 }
-                self.handle_keyboard_grid(ctx);
+                crate::grid::GridMode::MultiCamera => {
+                    // No resize or paging in multi-camera mode
+                }
             }
             return;
         }
@@ -235,6 +253,29 @@ impl App {
             if let Some(gds) = grid_dataset!(self) {
                 if let Some(grid) = &mut self.grid_view {
                     grid.navigate_page(delta, ctx, &gds);
+                    self.scroll_to_selected = true;
+                }
+            }
+        }
+    }
+
+    /// Arrow key paging for episode×camera matrix (pages episode rows).
+    fn handle_keyboard_grid_matrix(&mut self, ctx: &egui::Context) {
+        let mut page_delta: Option<isize> = None;
+
+        ctx.input(|i| {
+            if i.key_pressed(egui::Key::ArrowRight) || i.key_pressed(egui::Key::D) {
+                page_delta = Some(1);
+            }
+            if i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::A) {
+                page_delta = Some(-1);
+            }
+        });
+
+        if let Some(delta) = page_delta {
+            if let Some(ds) = &self.dataset {
+                if let Some(grid) = &mut self.grid_view {
+                    grid.navigate_page_matrix(delta, ctx, ds, &self.selected_cameras);
                     self.scroll_to_selected = true;
                 }
             }
