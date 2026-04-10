@@ -448,6 +448,10 @@ pub(crate) struct VideoPlayer {
 
     video_path: PathBuf,
     ctx: egui::Context,
+
+    // Persistent scrub worker (created lazily on first scrub)
+    scrub_tx: Option<mpsc::Sender<usize>>,
+    scrub_result_rx: Option<mpsc::Receiver<Option<egui::ColorImage>>>,
 }
 
 impl VideoPlayer {
@@ -479,6 +483,8 @@ impl VideoPlayer {
             fps,
             video_path: video_path.to_path_buf(),
             ctx: ctx.clone(),
+            scrub_tx: None,
+            scrub_result_rx: None,
         }
     }
 
@@ -519,11 +525,55 @@ impl VideoPlayer {
             video::decode_all_frames_sync(&path, tx, cancel, ctx, seek_frame);
         }));
     }
+
+    /// Send a scrub request to the persistent worker. The worker decodes
+    /// forward from its current position (fast for forward scrubs) or seeks
+    /// if needed. Created lazily on first call.
+    pub fn scrub_to(&mut self, frame: usize) {
+        // Drain stale results so poll only sees the latest
+        if let Some(rx) = &self.scrub_result_rx {
+            while rx.try_recv().is_ok() {}
+        }
+
+        // Lazily spawn the persistent scrub worker
+        if self.scrub_tx.is_none() {
+            let (req_tx, req_rx) = mpsc::channel();
+            let (res_tx, res_rx) = mpsc::channel();
+            self.scrub_tx = Some(req_tx);
+            self.scrub_result_rx = Some(res_rx);
+
+            let path = self.video_path.clone();
+            let fps = self.fps;
+            let ctx = self.ctx.clone();
+            std::thread::spawn(move || {
+                video::scrub_worker(path, fps, req_rx, res_tx, ctx);
+            });
+        }
+
+        if let Some(tx) = &self.scrub_tx {
+            let _ = tx.send(frame);
+        }
+    }
+
+    /// Poll for a completed scrub frame from the persistent worker.
+    pub fn poll_scrub_frame(&mut self) -> Option<egui::ColorImage> {
+        let rx = self.scrub_result_rx.as_ref()?;
+        rx.try_recv().ok().flatten()
+    }
+
+    /// Drain pending scrub results. The worker stays alive for reuse.
+    pub fn cancel_scrub(&mut self) {
+        if let Some(rx) = &self.scrub_result_rx {
+            while rx.try_recv().is_ok() {}
+        }
+    }
 }
 
 impl Drop for VideoPlayer {
     fn drop(&mut self) {
         self.cancel.store(true, Ordering::Relaxed);
+        // Dropping scrub_tx closes the channel, signaling the worker to exit
+        self.scrub_tx = None;
     }
 }
 

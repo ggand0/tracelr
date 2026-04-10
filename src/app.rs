@@ -43,6 +43,7 @@ pub struct App {
     pub(crate) playing: bool,
     pub(crate) last_frame_time: Option<Instant>,
     pub(crate) frame_slider_dragging: bool,
+    pub(crate) last_scrub_seek: Option<Instant>,
 
     // Grid view
     pub(crate) grid_view: Option<GridView>,
@@ -101,6 +102,7 @@ impl App {
             playing: false,
             last_frame_time: None,
             frame_slider_dragging: false,
+            last_scrub_seek: None,
             grid_view: None,
             grid_cols: 2,
             grid_rows: 2,
@@ -282,10 +284,22 @@ impl eframe::App for App {
             grid.tick(ctx);
             self.perf.record_display();
         } else {
-            // Single-video mode: poll first frame after seek/init
+            // Single-video mode: poll first frame after seek/init or during scrub
             if self.viewing_video && !self.playing {
                 if let Some(player) = &mut self.player {
-                    if self.current_texture.is_none() {
+                    if self.frame_slider_dragging {
+                        // During scrub: poll the dedicated scrub decoder
+                        if let Some(image) = player.poll_scrub_frame() {
+                            let name = format!("scrub_{}", self.current_frame);
+                            self.current_texture = Some(ctx.load_texture(
+                                name,
+                                image,
+                                egui::TextureOptions::LINEAR,
+                            ));
+                            self.perf.record_display();
+                        }
+                        ctx.request_repaint();
+                    } else if self.current_texture.is_none() {
                         if let Some(tex) = player.poll_next_frame() {
                             self.current_frame = player.current_frame;
                             self.current_texture = Some(tex);
@@ -359,6 +373,12 @@ impl eframe::App for App {
                 .exact_height(22.0)
                 .show(ctx, |ui| {
                     self.show_grid_footer(ui);
+                });
+
+            egui::TopBottomPanel::bottom("grid_slider")
+                .exact_height(28.0)
+                .show(ctx, |ui| {
+                    self.show_grid_frame_slider(ctx, ui);
                 });
         }
 

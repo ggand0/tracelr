@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Once};
 use std::time::Instant;
@@ -337,6 +337,127 @@ fn decode_all_frames_inner(
             return;
         }
         frame_count += 1;
+    }
+}
+
+/// Persistent scrub worker thread. Holds an open ffmpeg decoder and accepts
+/// target frame requests through a channel. Avoids per-scrub file open, codec
+/// init, and thread spawn. Forward scrubs skip the seek entirely when the
+/// target is within a keyframe interval of the last decoded position.
+pub(crate) fn scrub_worker(
+    video_path: PathBuf,
+    fps: u32,
+    request_rx: mpsc::Receiver<usize>,
+    result_tx: mpsc::Sender<Option<egui::ColorImage>>,
+    ctx: egui::Context,
+) {
+    ensure_ffmpeg_init();
+
+    let mut ictx = match ffmpeg_next::format::input(&video_path) {
+        Ok(c) => c,
+        Err(e) => {
+            log::error!("Scrub worker: failed to open {}: {}", video_path.display(), e);
+            return;
+        }
+    };
+
+    let video_stream_index;
+    let decoder_params;
+    let time_base;
+    {
+        let stream = match ictx.streams().best(ffmpeg_next::media::Type::Video) {
+            Some(s) => s,
+            None => {
+                log::error!("Scrub worker: no video stream");
+                return;
+            }
+        };
+        video_stream_index = stream.index();
+        decoder_params = stream.parameters();
+        time_base = stream.time_base();
+    }
+
+    let mut decoder = match ffmpeg_next::codec::context::Context::from_parameters(decoder_params)
+        .and_then(|c| c.decoder().video())
+    {
+        Ok(d) => d,
+        Err(e) => {
+            log::error!("Scrub worker: failed to create decoder: {}", e);
+            return;
+        }
+    };
+
+    let fps_f64 = fps as f64;
+    let tb_num = time_base.0 as f64;
+    let tb_den = time_base.1 as f64;
+    let mut decoded_frame = ffmpeg_next::frame::Video::empty();
+    let mut last_pos: Option<usize> = None;
+
+    // Block until a scrub request arrives. Loop exits when the sender is dropped.
+    while let Ok(initial) = request_rx.recv() {
+        let mut target = initial;
+        // Drain to latest request (discard stale ones)
+        while let Ok(t) = request_rx.try_recv() {
+            target = t;
+        }
+
+        // Decide: decode forward (fast) or seek (needed for backward / large jumps)
+        let need_seek = !matches!(last_pos, Some(pos) if target > pos && target - pos <= 60);
+
+        if need_seek {
+            let target_us = (target as f64 / fps_f64 * 1_000_000.0) as i64;
+            let _ = ictx.seek(target_us.max(0), ..target_us.max(0));
+            decoder.flush();
+            last_pos = None;
+        }
+
+        // Decode forward to target
+        let mut found = false;
+        for (stream, packet) in ictx.packets() {
+            if stream.index() != video_stream_index {
+                continue;
+            }
+            decoder.send_packet(&packet).ok();
+            while decoder.receive_frame(&mut decoded_frame).is_ok() {
+                if let Some(pts) = decoded_frame.pts() {
+                    let idx = (pts as f64 * tb_num / tb_den * fps_f64).round() as usize;
+                    last_pos = Some(idx);
+
+                    if idx >= target {
+                        let image = frame_to_color_image(&decoded_frame).ok();
+                        let _ = result_tx.send(image);
+                        ctx.request_repaint();
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if found {
+                break;
+            }
+        }
+
+        if !found {
+            // Flush decoder for last buffered frames (near end of file)
+            decoder.send_eof().ok();
+            while decoder.receive_frame(&mut decoded_frame).is_ok() {
+                if let Some(pts) = decoded_frame.pts() {
+                    let idx = (pts as f64 * tb_num / tb_den * fps_f64).round() as usize;
+                    if idx >= target {
+                        let image = frame_to_color_image(&decoded_frame).ok();
+                        let _ = result_tx.send(image);
+                        ctx.request_repaint();
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if !found {
+                let _ = result_tx.send(None);
+            }
+            // After EOF, force seek on next request
+            last_pos = None;
+        }
     }
 }
 
