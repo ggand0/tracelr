@@ -74,15 +74,22 @@ impl App {
                             .color(self.theme.muted)
                             .small(),
                     );
-                    if let Some((cols, rows)) = grid_size_picker(ui, self.grid_cols, self.grid_rows, self.theme.accent) {
-                        self.grid_cols = cols;
-                        self.grid_rows = rows;
-                        if !in_grid {
-                            self.toggle_grid_view(ctx);
-                        }
-                        if let Some(gds) = grid_dataset!(self) {
-                            if let Some(grid) = &mut self.grid_view {
-                                grid.resize(cols, rows, ctx, &gds);
+                    let grid_mode = self.grid_view.as_ref().map(|g| g.mode);
+                    let picker_disabled = matches!(
+                        grid_mode,
+                        Some(crate::grid::GridMode::MultiCamera | crate::grid::GridMode::EpisodeCamera)
+                    );
+                    if !picker_disabled {
+                        if let Some((cols, rows)) = grid_size_picker(ui, self.grid_cols, self.grid_rows, self.theme.accent) {
+                            self.grid_cols = cols;
+                            self.grid_rows = rows;
+                            if !in_grid {
+                                self.toggle_grid_view(ctx);
+                            }
+                            if let Some(gds) = grid_dataset!(self) {
+                                if let Some(grid) = &mut self.grid_view {
+                                    grid.resize(cols, rows, ctx, &gds);
+                                }
                             }
                         }
                     }
