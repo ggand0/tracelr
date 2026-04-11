@@ -80,27 +80,22 @@ impl App {
                             .color(self.theme.muted)
                             .small(),
                     );
-                    let grid_mode = self.grid_view.as_ref().map(|g| g.mode);
-                    let picker_disabled = matches!(
-                        grid_mode,
-                        Some(crate::grid::GridMode::MultiCamera)
-                    );
-                    if !picker_disabled {
-                        if let Some((cols, rows)) = grid_size_picker(ui, self.grid_cols, self.grid_rows, self.theme.accent) {
-                            self.grid_cols = cols;
-                            self.grid_rows = rows;
-                            if !in_grid {
-                                self.toggle_grid_view(ctx);
-                            } else if self.camera_display != crate::app::CameraDisplay::SingleCamera {
-                                if let Some(ds) = &self.dataset {
-                                    if let Some(grid) = &mut self.grid_view {
-                                        grid.resize_tiled(cols, rows, ctx, ds, &self.selected_cameras);
-                                    }
-                                }
-                            } else if let Some(gds) = grid_dataset!(self) {
-                                if let Some(grid) = &mut self.grid_view {
-                                    grid.resize(cols, rows, ctx, &gds);
-                                }
+                    if let Some((cols, rows)) = grid_size_picker(ui, self.grid_cols, self.grid_rows, self.theme.accent) {
+                        self.grid_cols = cols;
+                        self.grid_rows = rows;
+                        let is_multi_camera = self.grid_view.as_ref()
+                            .map(|g| g.mode == crate::grid::GridMode::MultiCamera)
+                            .unwrap_or(false);
+                        if is_multi_camera {
+                            // Store preference only; MultiCamera auto-sizes
+                        } else if !in_grid {
+                            self.toggle_grid_view(ctx);
+                        } else if self.camera_display != crate::app::CameraDisplay::SingleCamera {
+                            let start = self.grid_view.as_ref().map(|g| g.start_episode).unwrap_or(0);
+                            self.enter_grid_with_camera_display(ctx, start);
+                        } else if let Some(gds) = grid_dataset!(self) {
+                            if let Some(grid) = &mut self.grid_view {
+                                grid.resize(cols, rows, ctx, &gds);
                             }
                         }
                     }

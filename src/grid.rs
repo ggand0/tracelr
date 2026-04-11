@@ -475,18 +475,6 @@ impl GridView {
         *self = Self::new_tiled(ctx, grid_cols, grid_rows, new_start, ds, selected_cameras);
     }
 
-    /// Rebuild the tiled grid at current start_episode with new dimensions.
-    pub fn resize_tiled(
-        &mut self,
-        grid_cols: usize,
-        grid_rows: usize,
-        ctx: &egui::Context,
-        ds: &crate::dataset::LeRobotDataset,
-        selected_cameras: &[bool],
-    ) {
-        *self = Self::new_tiled(ctx, grid_cols, grid_rows, self.start_episode, ds, selected_cameras);
-    }
-
     /// Render the grid into the given UI area.
     pub fn show(&mut self, ui: &mut egui::Ui, theme_muted: egui::Color32, theme_accent: egui::Color32) {
         if self.subgrid && self.cam_count > 1 {
