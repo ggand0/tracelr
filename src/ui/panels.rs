@@ -85,12 +85,7 @@ impl App {
                         if self.camera_display == crate::app::CameraDisplay::Tiled {
                             self.camera_display = crate::app::CameraDisplay::SingleCamera;
                         }
-                        let is_multi_camera = self.grid_view.as_ref()
-                            .map(|g| g.mode == crate::grid::GridMode::MultiCamera)
-                            .unwrap_or(false);
-                        if is_multi_camera {
-                            // Store preference only; MultiCamera auto-sizes
-                        } else if !in_grid {
+                        if !in_grid {
                             self.toggle_grid_view(ctx);
                         } else {
                             let start = self.grid_view.as_ref().map(|g| g.start_episode).unwrap_or(0);
