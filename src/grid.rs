@@ -147,10 +147,7 @@ impl GridView {
             }
         };
 
-        let selected_keys: Vec<&str> = ds.info.video_keys.iter().enumerate()
-            .filter(|(i, _)| selected_cameras.get(*i).copied().unwrap_or(false))
-            .map(|(_, k)| k.as_str())
-            .collect();
+        let selected_keys = selected_video_keys(&ds.info.video_keys, selected_cameras);
 
         let cam_count = selected_keys.len();
         let (cols, rows) = camera_grid_size(cam_count);
@@ -196,10 +193,7 @@ impl GridView {
         ds: &crate::dataset::LeRobotDataset,
         selected_cameras: &[bool],
     ) -> Self {
-        let selected_keys: Vec<&str> = ds.info.video_keys.iter().enumerate()
-            .filter(|(i, _)| selected_cameras.get(*i).copied().unwrap_or(false))
-            .map(|(_, k)| k.as_str())
-            .collect();
+        let selected_keys = selected_video_keys(&ds.info.video_keys, selected_cameras);
         let cam_count = selected_keys.len().max(1);
         let groups_per_row = (grid_cols / cam_count).max(1);
         let actual_cols = cam_count * groups_per_row;
@@ -255,10 +249,7 @@ impl GridView {
         ds: &crate::dataset::LeRobotDataset,
         selected_cameras: &[bool],
     ) -> Self {
-        let selected_keys: Vec<&str> = ds.info.video_keys.iter().enumerate()
-            .filter(|(i, _)| selected_cameras.get(*i).copied().unwrap_or(false))
-            .map(|(_, k)| k.as_str())
-            .collect();
+        let selected_keys = selected_video_keys(&ds.info.video_keys, selected_cameras);
         let cam_count = selected_keys.len().max(1);
         let total_cells = grid_cols * grid_rows;
         let mut panes = Vec::with_capacity(total_cells * cam_count);
@@ -730,6 +721,14 @@ impl GridView {
         self.playing = true;
         self.last_frame_time = None;
     }
+}
+
+/// Filter video keys by the selected_cameras bitmask.
+fn selected_video_keys<'a>(video_keys: &'a [String], selected: &[bool]) -> Vec<&'a str> {
+    video_keys.iter().enumerate()
+        .filter(|(i, _)| selected.get(*i).copied().unwrap_or(false))
+        .map(|(_, k)| k.as_str())
+        .collect()
 }
 
 /// Compute (cols, rows) for a given camera count.

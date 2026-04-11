@@ -194,6 +194,8 @@ impl App {
                 }
 
                 self.selected_cameras = vec![true; ds.info.video_keys.len()];
+                self.camera_display = CameraDisplay::SingleCamera;
+                self.grid_view = None;
                 self.dataset = Some(ds);
                 self.rebuild_video_paths();
                 self.current_episode = 0;
