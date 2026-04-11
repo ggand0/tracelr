@@ -114,20 +114,13 @@ impl App {
                     if minus_pressed {
                         self.grid_resize(-1, ctx);
                     }
-                    self.handle_keyboard_grid(ctx);
-                }
-                crate::grid::GridMode::EpisodeCamera => {
-                    // +/- adjusts episode row count
-                    if plus_pressed || minus_pressed {
-                        let delta = if plus_pressed { 1 } else { -1 };
-                        if let Some(ds) = &self.dataset {
-                            if let Some(grid) = &mut self.grid_view {
-                                grid.resize_episode_rows(delta, ctx, ds, &self.selected_cameras);
-                            }
-                        }
+                    let is_tiled = self.grid_view.as_ref()
+                        .map(|g| g.cam_count > 1).unwrap_or(false);
+                    if is_tiled {
+                        self.handle_keyboard_grid_tiled(ctx);
+                    } else {
+                        self.handle_keyboard_grid(ctx);
                     }
-                    // Left/Right pages through episodes
-                    self.handle_keyboard_grid_matrix(ctx);
                 }
                 crate::grid::GridMode::MultiCamera => {
                     // No resize or paging in multi-camera mode
@@ -259,8 +252,8 @@ impl App {
         }
     }
 
-    /// Arrow key paging for episode×camera matrix (pages episode rows).
-    fn handle_keyboard_grid_matrix(&mut self, ctx: &egui::Context) {
+    /// Arrow key paging for tiled grid (pages by episodes_shown).
+    fn handle_keyboard_grid_tiled(&mut self, ctx: &egui::Context) {
         let mut page_delta: Option<isize> = None;
 
         ctx.input(|i| {
@@ -275,7 +268,10 @@ impl App {
         if let Some(delta) = page_delta {
             if let Some(ds) = &self.dataset {
                 if let Some(grid) = &mut self.grid_view {
-                    grid.navigate_page_matrix(delta, ctx, ds, &self.selected_cameras);
+                    grid.navigate_page_tiled(
+                        delta, ctx, self.grid_cols, self.grid_rows,
+                        ds, &self.selected_cameras,
+                    );
                     self.scroll_to_selected = true;
                 }
             }

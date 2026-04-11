@@ -56,12 +56,14 @@ impl App {
                         self.toggle_grid_view(ctx);
                     }
                     if has_multi_cam {
+                        let is_tiled = self.grid_view.as_ref()
+                            .map(|g| g.cam_count > 1).unwrap_or(false);
                         let grid_mode = self.grid_view.as_ref().map(|g| g.mode);
-                        let label = match grid_mode {
-                            Some(crate::grid::GridMode::MultiCamera) => "Single Camera  [M]",
-                            Some(crate::grid::GridMode::EpisodeCamera) => "Episodes Only  [M]",
-                            Some(crate::grid::GridMode::MultiEpisode) => "+ Cameras  [M]",
-                            None => "Multi-Camera  [M]",
+                        let label = match (grid_mode, is_tiled) {
+                            (Some(crate::grid::GridMode::MultiCamera), _) => "Single Camera  [M]",
+                            (Some(crate::grid::GridMode::MultiEpisode), true) => "Episodes Only  [M]",
+                            (Some(crate::grid::GridMode::MultiEpisode), false) => "+ Cameras  [M]",
+                            (None, _) => "Multi-Camera  [M]",
                         };
                         if ui.button(label).clicked() {
                             ui.close_menu();
@@ -77,7 +79,7 @@ impl App {
                     let grid_mode = self.grid_view.as_ref().map(|g| g.mode);
                     let picker_disabled = matches!(
                         grid_mode,
-                        Some(crate::grid::GridMode::MultiCamera | crate::grid::GridMode::EpisodeCamera)
+                        Some(crate::grid::GridMode::MultiCamera)
                     );
                     if !picker_disabled {
                         if let Some((cols, rows)) = grid_size_picker(ui, self.grid_cols, self.grid_rows, self.theme.accent) {
@@ -85,8 +87,13 @@ impl App {
                             self.grid_rows = rows;
                             if !in_grid {
                                 self.toggle_grid_view(ctx);
-                            }
-                            if let Some(gds) = grid_dataset!(self) {
+                            } else if self.camera_tiling {
+                                if let Some(ds) = &self.dataset {
+                                    if let Some(grid) = &mut self.grid_view {
+                                        grid.resize_tiled(cols, rows, ctx, ds, &self.selected_cameras);
+                                    }
+                                }
+                            } else if let Some(gds) = grid_dataset!(self) {
                                 if let Some(grid) = &mut self.grid_view {
                                     grid.resize(cols, rows, ctx, &gds);
                                 }
@@ -149,9 +156,8 @@ impl App {
         // Determine which episodes are highlighted (single or grid range)
         let grid_range = self.grid_view.as_ref().map(|g| match g.mode {
             crate::grid::GridMode::MultiCamera => g.fixed_episode..g.fixed_episode + 1,
-            crate::grid::GridMode::EpisodeCamera => g.start_episode..g.start_episode + g.rows,
             crate::grid::GridMode::MultiEpisode => {
-                let end = g.start_episode + g.pane_count();
+                let end = g.start_episode + g.episodes_shown();
                 g.start_episode..end
             }
         });
@@ -234,19 +240,22 @@ impl App {
                     }
                     self.scroll_to_selected = true;
                 }
-                Some(crate::grid::GridMode::EpisodeCamera) => {
-                    self.current_episode = ep;
-                    if let Some(ds) = &self.dataset {
-                        let rows = self.grid_view.as_ref().map(|g| g.rows).unwrap_or(3);
-                        let grid = crate::grid::GridView::new_episode_camera(
-                            ctx, rows, ep, ds, &self.selected_cameras,
-                        );
-                        self.grid_view = Some(grid);
-                    }
-                    self.scroll_to_selected = true;
-                }
                 Some(crate::grid::GridMode::MultiEpisode) => {
-                    self.grid_jump_to(ep, ctx);
+                    let is_tiled = self.grid_view.as_ref()
+                        .map(|g| g.cam_count > 1).unwrap_or(false);
+                    if is_tiled {
+                        self.current_episode = ep;
+                        if let Some(ds) = &self.dataset {
+                            let grid = crate::grid::GridView::new_tiled(
+                                ctx, self.grid_cols, self.grid_rows,
+                                ep, ds, &self.selected_cameras,
+                            );
+                            self.grid_view = Some(grid);
+                        }
+                        self.scroll_to_selected = true;
+                    } else {
+                        self.grid_jump_to(ep, ctx);
+                    }
                 }
                 None => {
                     if self.viewing_video {
@@ -838,6 +847,8 @@ impl App {
                         .color(bright),
                 );
 
+                let is_tiled = grid.cam_count > 1;
+
                 match grid.mode {
                     crate::grid::GridMode::MultiCamera => {
                         ui.label(
@@ -849,60 +860,64 @@ impl App {
                             .color(bright),
                         );
                     }
-                    crate::grid::GridMode::EpisodeCamera => {
-                        let total = self.video_paths.len();
-                        let end_ep = (grid.start_episode + grid.rows).min(total);
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "{}r x {}c  ep {}-{} / {}",
-                                grid.rows, grid.cols,
-                                grid.start_episode, end_ep.saturating_sub(1), total,
-                            ))
-                            .font(font.clone())
-                            .color(bright),
-                        );
-                    }
                     crate::grid::GridMode::MultiEpisode => {
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "Grid {}x{}", grid.cols, grid.rows,
-                            ))
-                            .font(font.clone())
-                            .color(bright),
-                        );
-                        ui.separator();
                         let total = self.video_paths.len();
-                        let end = (grid.start_episode + grid.pane_count()).min(total);
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "ep {}-{} / {}",
-                                grid.start_episode, end.saturating_sub(1), total,
-                            ))
-                            .font(font.clone())
-                            .color(dim),
-                        );
-                        if let Some(ds) = &self.dataset {
-                            if ds.info.video_keys.len() > 1 {
-                                let cam = ds.info.video_keys
-                                    .get(self.current_video_key_index)
-                                    .map(|k| crate::dataset::camera_display_name(k))
-                                    .unwrap_or("?");
-                                ui.separator();
-                                ui.label(
-                                    egui::RichText::new(cam)
-                                        .font(font.clone())
-                                        .color(bright),
-                                );
+                        let eps = grid.episodes_shown();
+                        let end = (grid.start_episode + eps).min(total);
+                        if is_tiled {
+                            let groups_per_row = grid.cols / grid.cam_count;
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{}x{}  {} eps  {} cams  ep {}-{} / {}",
+                                    grid.cols, grid.rows,
+                                    groups_per_row, grid.cam_count,
+                                    grid.start_episode, end.saturating_sub(1), total,
+                                ))
+                                .font(font.clone())
+                                .color(bright),
+                            );
+                        } else {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "Grid {}x{}", grid.cols, grid.rows,
+                                ))
+                                .font(font.clone())
+                                .color(bright),
+                            );
+                            ui.separator();
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "ep {}-{} / {}",
+                                    grid.start_episode, end.saturating_sub(1), total,
+                                ))
+                                .font(font.clone())
+                                .color(dim),
+                            );
+                            if let Some(ds) = &self.dataset {
+                                if ds.info.video_keys.len() > 1 {
+                                    let cam = ds.info.video_keys
+                                        .get(self.current_video_key_index)
+                                        .map(|k| crate::dataset::camera_display_name(k))
+                                        .unwrap_or("?");
+                                    ui.separator();
+                                    ui.label(
+                                        egui::RichText::new(cam)
+                                            .font(font.clone())
+                                            .color(bright),
+                                    );
+                                }
                             }
                         }
                     }
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let hint = match grid.mode {
-                        crate::grid::GridMode::MultiCamera => "[M] exit",
-                        crate::grid::GridMode::EpisodeCamera => "[M] episodes only  [+/-] rows  [←/→] page",
-                        crate::grid::GridMode::MultiEpisode => {
+                    let hint = match (grid.mode, is_tiled) {
+                        (crate::grid::GridMode::MultiCamera, _) => "[M] exit",
+                        (crate::grid::GridMode::MultiEpisode, true) => {
+                            "[G] exit  [M] -cameras  [+/-] resize  [←/→] page"
+                        }
+                        (crate::grid::GridMode::MultiEpisode, false) => {
                             let has_multi_cam = self.dataset.as_ref()
                                 .map(|ds| ds.info.video_keys.len() > 1)
                                 .unwrap_or(false);

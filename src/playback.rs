@@ -332,14 +332,22 @@ impl App {
     }
 
     /// Toggle between single-video and multi-episode grid view.
-    /// If currently in multi-camera grid, exits to single-video first.
+    /// Respects camera_tiling: if on, enters tiled mode directly.
     pub(crate) fn toggle_grid_view(&mut self, ctx: &egui::Context) {
         if self.grid_view.is_some() {
             self.grid_view = None;
             self.enter_video_mode(ctx);
         } else {
             self.exit_video_mode();
-            if let Some(gds) = grid_dataset!(self) {
+            if self.camera_tiling {
+                if let Some(ds) = &self.dataset {
+                    let grid = GridView::new_tiled(
+                        ctx, self.grid_cols, self.grid_rows,
+                        self.current_episode, ds, &self.selected_cameras,
+                    );
+                    self.grid_view = Some(grid);
+                }
+            } else if let Some(gds) = grid_dataset!(self) {
                 let grid = GridView::new(ctx, self.grid_cols, self.grid_rows, self.current_episode, &gds);
                 self.grid_view = Some(grid);
             }
@@ -349,39 +357,35 @@ impl App {
     /// Toggle multi-camera dimension.
     /// - From single-video: enter multi-camera grid (one episode, all cameras).
     /// - From multi-camera grid: exit to single-video.
-    /// - From multi-episode grid: enter episode×camera matrix (add camera dimension).
-    /// - From episode×camera matrix: return to multi-episode grid (remove camera dimension).
+    /// - From multi-episode grid (not tiled): enable camera tiling.
+    /// - From multi-episode grid (tiled): disable camera tiling.
     pub(crate) fn toggle_multi_camera(&mut self, ctx: &egui::Context) {
         if let Some(grid) = &self.grid_view {
             match grid.mode {
                 GridMode::MultiCamera => {
-                    // Exit multi-camera → single-video
                     self.grid_view = None;
                     self.enter_video_mode(ctx);
                     return;
                 }
                 GridMode::MultiEpisode => {
-                    // Add camera dimension → episode×camera matrix
-                    if let Some(ds) = &self.dataset {
+                    let start = grid.start_episode;
+                    if grid.cam_count > 1 {
+                        // Tiled → untile
+                        self.camera_tiling = false;
+                        if let Some(gds) = grid_dataset!(self) {
+                            let grid = GridView::new(ctx, self.grid_cols, self.grid_rows, start, &gds);
+                            self.grid_view = Some(grid);
+                        }
+                    } else if let Some(ds) = &self.dataset {
                         if ds.info.video_keys.len() > 1 {
-                            let start = grid.start_episode;
-                            let ep_rows = grid.rows.min(GridView::max_episode_rows(
-                                self.selected_cameras.iter().filter(|&&v| v).count(),
-                            ));
-                            let grid = GridView::new_episode_camera(
-                                ctx, ep_rows, start, ds, &self.selected_cameras,
+                            // Untiled → tile
+                            self.camera_tiling = true;
+                            let grid = GridView::new_tiled(
+                                ctx, self.grid_cols, self.grid_rows,
+                                start, ds, &self.selected_cameras,
                             );
                             self.grid_view = Some(grid);
                         }
-                    }
-                    return;
-                }
-                GridMode::EpisodeCamera => {
-                    // Remove camera dimension → multi-episode grid
-                    let start = grid.start_episode;
-                    if let Some(gds) = grid_dataset!(self) {
-                        let grid = GridView::new(ctx, self.grid_cols, self.grid_rows, start, &gds);
-                        self.grid_view = Some(grid);
                     }
                     return;
                 }
@@ -393,10 +397,7 @@ impl App {
         if let Some(ds) = &self.dataset {
             if ds.info.video_keys.len() > 1 {
                 let grid = GridView::new_multi_camera(
-                    ctx,
-                    self.current_episode,
-                    ds,
-                    &self.selected_cameras,
+                    ctx, self.current_episode, ds, &self.selected_cameras,
                 );
                 self.grid_view = Some(grid);
             }
@@ -413,7 +414,14 @@ impl App {
         self.grid_cols = new_size;
         self.grid_rows = new_size;
 
-        if let Some(gds) = grid_dataset!(self) {
+        let is_tiled = self.grid_view.as_ref().map(|g| g.cam_count > 1).unwrap_or(false);
+        if is_tiled {
+            if let Some(ds) = &self.dataset {
+                if let Some(grid) = &mut self.grid_view {
+                    grid.resize_tiled(new_size, new_size, ctx, ds, &self.selected_cameras);
+                }
+            }
+        } else if let Some(gds) = grid_dataset!(self) {
             if let Some(grid) = &mut self.grid_view {
                 grid.resize(new_size, new_size, ctx, &gds);
             }
