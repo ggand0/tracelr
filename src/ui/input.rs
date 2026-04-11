@@ -17,6 +17,7 @@ impl App {
         let mut c_pressed = false;
         let mut shift_c_pressed = false;
         let mut m_pressed = false;
+        let mut n_pressed = false;
         let mut enter_pressed = false;
         let mut escape_pressed = false;
         let mut space_pressed = false;
@@ -29,6 +30,7 @@ impl App {
             c_pressed = i.key_pressed(egui::Key::C) && !i.modifiers.shift;
             shift_c_pressed = i.key_pressed(egui::Key::C) && i.modifiers.shift;
             m_pressed = i.key_pressed(egui::Key::M);
+            n_pressed = i.key_pressed(egui::Key::N);
             enter_pressed = i.key_pressed(egui::Key::Enter);
             escape_pressed = i.key_pressed(egui::Key::Escape);
             space_pressed = i.key_pressed(egui::Key::Space);
@@ -83,9 +85,15 @@ impl App {
             }
         }
 
-        // M toggles multi-camera view
+        // M toggles multi-camera view (SingleCamera ↔ Subgrid)
         if m_pressed {
             self.toggle_multi_camera(ctx);
+            return;
+        }
+
+        // N toggles tiled/matrix camera view
+        if n_pressed {
+            self.toggle_tiled(ctx);
             return;
         }
 

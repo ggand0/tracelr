@@ -56,25 +56,23 @@ impl App {
                         self.toggle_grid_view(ctx);
                     }
                     if has_multi_cam {
-                        let grid_mode = self.grid_view.as_ref().map(|g| g.mode);
-                        let label = match grid_mode {
-                            Some(crate::grid::GridMode::MultiCamera) => "Single Camera  [M]",
-                            Some(crate::grid::GridMode::MultiEpisode) => {
-                                use crate::app::CameraDisplay;
-                                match self.camera_display {
-                                    CameraDisplay::SingleCamera => "Tiled Cameras  [M]",
-                                    CameraDisplay::Tiled => "Subgrid Cameras  [M]",
-                                    CameraDisplay::Subgrid => "Single Camera  [M]",
-                                }
-                            }
-                            None => "Multi-Camera  [M]",
-                        };
-                        if ui.button(label).clicked() {
+                        let is_camera_grid = self.is_camera_grid();
+                        let mc_label = if is_camera_grid { "Single Camera  [M]" } else { "Multi-Camera  [M]" };
+                        if ui.button(mc_label).clicked() {
                             ui.close_menu();
                             self.toggle_multi_camera(ctx);
                         }
+
+                        let is_tiled_now = self.camera_display == crate::app::CameraDisplay::Tiled;
+                        let tiled_label = if is_tiled_now { "Exit Tiled  [N]" } else { "Tiled View  [N]" };
+                        if ui.button(tiled_label).clicked() {
+                            ui.close_menu();
+                            self.toggle_tiled(ctx);
+                        }
                     }
                     ui.separator();
+
+                    // Grid size picker — controls the episode grid (SingleCamera / Subgrid)
                     ui.label(
                         egui::RichText::new("Grid Size")
                             .color(self.theme.muted)
@@ -83,6 +81,10 @@ impl App {
                     if let Some((cols, rows)) = grid_size_picker(ui, self.grid_cols, self.grid_rows, self.theme.accent) {
                         self.grid_cols = cols;
                         self.grid_rows = rows;
+                        // Grid picker enters episode-grid mode (SingleCamera or Subgrid, not Tiled)
+                        if self.camera_display == crate::app::CameraDisplay::Tiled {
+                            self.camera_display = crate::app::CameraDisplay::SingleCamera;
+                        }
                         let is_multi_camera = self.grid_view.as_ref()
                             .map(|g| g.mode == crate::grid::GridMode::MultiCamera)
                             .unwrap_or(false);
@@ -90,15 +92,33 @@ impl App {
                             // Store preference only; MultiCamera auto-sizes
                         } else if !in_grid {
                             self.toggle_grid_view(ctx);
-                        } else if self.camera_display != crate::app::CameraDisplay::SingleCamera {
+                        } else {
                             let start = self.grid_view.as_ref().map(|g| g.start_episode).unwrap_or(0);
                             self.enter_grid_with_camera_display(ctx, start);
-                        } else if let Some(gds) = grid_dataset!(self) {
-                            if let Some(grid) = &mut self.grid_view {
-                                grid.resize(cols, rows, ctx, &gds);
-                            }
                         }
                     }
+
+                    // Matrix rows slider — always visible when multi-cam is available.
+                    // Interacting enters Tiled mode directly.
+                    if has_multi_cam {
+                        ui.separator();
+                        ui.label(
+                            egui::RichText::new("Matrix Rows")
+                                .color(self.theme.muted)
+                                .small(),
+                        );
+                        let mut tiled_rows = self.grid_rows;
+                        if ui.add(egui::Slider::new(&mut tiled_rows, 1..=10).text("rows")).changed() {
+                            self.grid_rows = tiled_rows;
+                            self.camera_display = crate::app::CameraDisplay::Tiled;
+                            let start = self.grid_view.as_ref().map(|g| g.start_episode).unwrap_or(0);
+                            if !in_grid {
+                                self.exit_video_mode();
+                            }
+                            self.enter_grid_with_camera_display(ctx, start);
+                        }
+                    }
+
                     ui.separator();
                     if self.robot_kinematics.is_some()
                         && ui
@@ -914,16 +934,16 @@ impl App {
                     let hint = match (grid.mode, is_tiled) {
                         (crate::grid::GridMode::MultiCamera, _) => "[M] exit",
                         (crate::grid::GridMode::MultiEpisode, true) => {
-                            "[G] exit  [M] cycle  [+/-] resize  [←/→] page"
+                            "[G] exit  [N] untile  [+/-] resize  [←/→] page"
                         }
                         (crate::grid::GridMode::MultiEpisode, false) => {
                             let has_multi_cam = self.dataset.as_ref()
                                 .map(|ds| ds.info.video_keys.len() > 1)
                                 .unwrap_or(false);
                             match (self.robot_kinematics.is_some(), has_multi_cam) {
-                                (true, true) => "[G] exit  [M] +cameras  [C] camera  [T] traj  [+/-] resize  [←/→] page",
+                                (true, true) => "[G] exit  [M] multi-cam  [N] tiled  [C] camera  [T] traj  [+/-] [←/→]",
                                 (true, false) => "[G] exit  [T] trajectory  [+/-] resize  [←/→] page",
-                                (false, true) => "[G] exit  [M] +cameras  [C] camera  [+/-] resize  [←/→] page",
+                                (false, true) => "[G] exit  [M] multi-cam  [N] tiled  [C] camera  [+/-] resize  [←/→] page",
                                 (false, false) => "[G] exit  [+/-] resize  [←/→] page",
                             }
                         }

@@ -376,7 +376,7 @@ impl App {
         }
     }
 
-    /// Cycle multi-camera display: SingleCamera → Tiled → Subgrid → SingleCamera.
+    /// Toggle multi-camera: SingleCamera ↔ Subgrid.
     /// From single-video mode: enter multi-camera grid (one episode, all cameras).
     /// From multi-camera grid: exit to single-video.
     pub(crate) fn toggle_multi_camera(&mut self, ctx: &egui::Context) {
@@ -395,11 +395,10 @@ impl App {
                     if !has_multi { return; }
 
                     use crate::app::CameraDisplay;
-                    // Cycle: SingleCamera → Tiled → Subgrid → SingleCamera
+                    // Toggle: SingleCamera ↔ Subgrid (Tiled is entered via menu slider)
                     self.camera_display = match self.camera_display {
-                        CameraDisplay::SingleCamera => CameraDisplay::Tiled,
-                        CameraDisplay::Tiled => CameraDisplay::Subgrid,
-                        CameraDisplay::Subgrid => CameraDisplay::SingleCamera,
+                        CameraDisplay::SingleCamera => CameraDisplay::Subgrid,
+                        CameraDisplay::Subgrid | CameraDisplay::Tiled => CameraDisplay::SingleCamera,
                     };
                     self.enter_grid_with_camera_display(ctx, start);
                     return;
@@ -416,6 +415,28 @@ impl App {
                 );
                 self.grid_view = Some(grid);
             }
+        }
+    }
+
+    /// Toggle tiled/matrix camera view.
+    /// From multi-episode grid: toggle Tiled on/off.
+    /// From other modes: no-op.
+    pub(crate) fn toggle_tiled(&mut self, ctx: &egui::Context) {
+        if let Some(grid) = &self.grid_view {
+            if grid.mode != GridMode::MultiEpisode { return; }
+            let has_multi = self.dataset.as_ref()
+                .map(|ds| ds.info.video_keys.len() > 1)
+                .unwrap_or(false);
+            if !has_multi { return; }
+
+            let start = grid.start_episode;
+            use crate::app::CameraDisplay;
+            if self.camera_display == CameraDisplay::Tiled {
+                self.camera_display = CameraDisplay::SingleCamera;
+            } else {
+                self.camera_display = CameraDisplay::Tiled;
+            }
+            self.enter_grid_with_camera_display(ctx, start);
         }
     }
 
