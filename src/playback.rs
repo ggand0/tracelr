@@ -332,33 +332,50 @@ impl App {
     }
 
     /// Toggle between single-video and multi-episode grid view.
-    /// Respects camera_tiling: if on, enters tiled mode directly.
+    /// Respects camera_display: enters the appropriate mode directly.
     pub(crate) fn toggle_grid_view(&mut self, ctx: &egui::Context) {
         if self.grid_view.is_some() {
             self.grid_view = None;
             self.enter_video_mode(ctx);
         } else {
             self.exit_video_mode();
-            if self.camera_tiling {
+            self.enter_grid_with_camera_display(ctx, self.current_episode);
+        }
+    }
+
+    /// Build the right grid for the current camera_display setting.
+    pub(crate) fn enter_grid_with_camera_display(&mut self, ctx: &egui::Context, start_episode: usize) {
+        use crate::app::CameraDisplay;
+        match self.camera_display {
+            CameraDisplay::Tiled | CameraDisplay::Subgrid => {
                 if let Some(ds) = &self.dataset {
-                    let grid = GridView::new_tiled(
+                    let mut grid = GridView::new_tiled(
                         ctx, self.grid_cols, self.grid_rows,
-                        self.current_episode, ds, &self.selected_cameras,
+                        start_episode, ds, &self.selected_cameras,
+                    );
+                    if self.camera_display == CameraDisplay::Subgrid {
+                        grid.subgrid = true;
+                        // Restore outer grid dims for subgrid rendering
+                        grid.cols = self.grid_cols;
+                        grid.rows = self.grid_rows;
+                    }
+                    self.grid_view = Some(grid);
+                }
+            }
+            CameraDisplay::SingleCamera => {
+                if let Some(gds) = grid_dataset!(self) {
+                    let grid = GridView::new(
+                        ctx, self.grid_cols, self.grid_rows, start_episode, &gds,
                     );
                     self.grid_view = Some(grid);
                 }
-            } else if let Some(gds) = grid_dataset!(self) {
-                let grid = GridView::new(ctx, self.grid_cols, self.grid_rows, self.current_episode, &gds);
-                self.grid_view = Some(grid);
             }
         }
     }
 
-    /// Toggle multi-camera dimension.
-    /// - From single-video: enter multi-camera grid (one episode, all cameras).
-    /// - From multi-camera grid: exit to single-video.
-    /// - From multi-episode grid (not tiled): enable camera tiling.
-    /// - From multi-episode grid (tiled): disable camera tiling.
+    /// Cycle multi-camera display: SingleCamera → Tiled → Subgrid → SingleCamera.
+    /// From single-video mode: enter multi-camera grid (one episode, all cameras).
+    /// From multi-camera grid: exit to single-video.
     pub(crate) fn toggle_multi_camera(&mut self, ctx: &egui::Context) {
         if let Some(grid) = &self.grid_view {
             match grid.mode {
@@ -369,24 +386,19 @@ impl App {
                 }
                 GridMode::MultiEpisode => {
                     let start = grid.start_episode;
-                    if grid.cam_count > 1 {
-                        // Tiled → untile
-                        self.camera_tiling = false;
-                        if let Some(gds) = grid_dataset!(self) {
-                            let grid = GridView::new(ctx, self.grid_cols, self.grid_rows, start, &gds);
-                            self.grid_view = Some(grid);
-                        }
-                    } else if let Some(ds) = &self.dataset {
-                        if ds.info.video_keys.len() > 1 {
-                            // Untiled → tile
-                            self.camera_tiling = true;
-                            let grid = GridView::new_tiled(
-                                ctx, self.grid_cols, self.grid_rows,
-                                start, ds, &self.selected_cameras,
-                            );
-                            self.grid_view = Some(grid);
-                        }
-                    }
+                    let has_multi = self.dataset.as_ref()
+                        .map(|ds| ds.info.video_keys.len() > 1)
+                        .unwrap_or(false);
+                    if !has_multi { return; }
+
+                    use crate::app::CameraDisplay;
+                    // Cycle: SingleCamera → Tiled → Subgrid → SingleCamera
+                    self.camera_display = match self.camera_display {
+                        CameraDisplay::SingleCamera => CameraDisplay::Tiled,
+                        CameraDisplay::Tiled => CameraDisplay::Subgrid,
+                        CameraDisplay::Subgrid => CameraDisplay::SingleCamera,
+                    };
+                    self.enter_grid_with_camera_display(ctx, start);
                     return;
                 }
             }
@@ -414,13 +426,10 @@ impl App {
         self.grid_cols = new_size;
         self.grid_rows = new_size;
 
-        let is_tiled = self.grid_view.as_ref().map(|g| g.cam_count > 1).unwrap_or(false);
-        if is_tiled {
-            if let Some(ds) = &self.dataset {
-                if let Some(grid) = &mut self.grid_view {
-                    grid.resize_tiled(new_size, new_size, ctx, ds, &self.selected_cameras);
-                }
-            }
+        let is_multi_cam = self.grid_view.as_ref().map(|g| g.cam_count > 1).unwrap_or(false);
+        if is_multi_cam {
+            let start = self.grid_view.as_ref().map(|g| g.start_episode).unwrap_or(0);
+            self.enter_grid_with_camera_display(ctx, start);
         } else if let Some(gds) = grid_dataset!(self) {
             if let Some(grid) = &mut self.grid_view {
                 grid.resize(new_size, new_size, ctx, &gds);

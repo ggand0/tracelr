@@ -15,6 +15,17 @@ use crate::trajectory_view::OrbitCamera;
 const CACHE_COUNT: usize = 5; // ±5 episodes = 11 total slots
 const LRU_CAPACITY: usize = 50;
 
+/// How cameras are shown in the multi-episode grid.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CameraDisplay {
+    /// One camera per pane (default).
+    SingleCamera,
+    /// Each episode's cameras get their own flat panes, tiled into the grid.
+    Tiled,
+    /// Each episode pane renders all cameras as a subgrid inside it.
+    Subgrid,
+}
+
 
 pub struct App {
     // Data
@@ -52,8 +63,8 @@ pub struct App {
     pub(crate) grid_rows: usize,
     /// Which cameras are selected for multi-camera mode (one bool per video_key).
     pub(crate) selected_cameras: Vec<bool>,
-    /// Whether camera tiling is active in multi-episode grid mode.
-    pub(crate) camera_tiling: bool,
+    /// How cameras are displayed in multi-episode grid mode.
+    pub(crate) camera_display: CameraDisplay,
 
     /// Set to true when navigation changes the selected episode(s),
     /// consumed after one frame to auto-scroll the episode list.
@@ -116,7 +127,7 @@ impl App {
             grid_cols: 2,
             grid_rows: 2,
             selected_cameras: Vec::new(),
-            camera_tiling: false,
+            camera_display: CameraDisplay::SingleCamera,
             scroll_to_selected: false,
             robot_kinematics: None,
             trajectory_cache: TrajectoryCache::new(100),
@@ -367,12 +378,7 @@ impl eframe::App for App {
                     }
                     crate::grid::GridMode::MultiEpisode if grid.cam_count > 1 => {
                         let start = grid.start_episode;
-                        if let Some(ds) = &self.dataset {
-                            let grid = GridView::new_tiled(
-                                ctx, self.grid_cols, self.grid_rows, start, ds, &self.selected_cameras,
-                            );
-                            self.grid_view = Some(grid);
-                        }
+                        self.enter_grid_with_camera_display(ctx, start);
                     }
                     _ => {}
                 }

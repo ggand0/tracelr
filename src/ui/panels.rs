@@ -56,14 +56,18 @@ impl App {
                         self.toggle_grid_view(ctx);
                     }
                     if has_multi_cam {
-                        let is_tiled = self.grid_view.as_ref()
-                            .map(|g| g.cam_count > 1).unwrap_or(false);
                         let grid_mode = self.grid_view.as_ref().map(|g| g.mode);
-                        let label = match (grid_mode, is_tiled) {
-                            (Some(crate::grid::GridMode::MultiCamera), _) => "Single Camera  [M]",
-                            (Some(crate::grid::GridMode::MultiEpisode), true) => "Episodes Only  [M]",
-                            (Some(crate::grid::GridMode::MultiEpisode), false) => "+ Cameras  [M]",
-                            (None, _) => "Multi-Camera  [M]",
+                        let label = match grid_mode {
+                            Some(crate::grid::GridMode::MultiCamera) => "Single Camera  [M]",
+                            Some(crate::grid::GridMode::MultiEpisode) => {
+                                use crate::app::CameraDisplay;
+                                match self.camera_display {
+                                    CameraDisplay::SingleCamera => "Tiled Cameras  [M]",
+                                    CameraDisplay::Tiled => "Subgrid Cameras  [M]",
+                                    CameraDisplay::Subgrid => "Single Camera  [M]",
+                                }
+                            }
+                            None => "Multi-Camera  [M]",
                         };
                         if ui.button(label).clicked() {
                             ui.close_menu();
@@ -87,7 +91,7 @@ impl App {
                             self.grid_rows = rows;
                             if !in_grid {
                                 self.toggle_grid_view(ctx);
-                            } else if self.camera_tiling {
+                            } else if self.camera_display != crate::app::CameraDisplay::SingleCamera {
                                 if let Some(ds) = &self.dataset {
                                     if let Some(grid) = &mut self.grid_view {
                                         grid.resize_tiled(cols, rows, ctx, ds, &self.selected_cameras);
@@ -915,7 +919,7 @@ impl App {
                     let hint = match (grid.mode, is_tiled) {
                         (crate::grid::GridMode::MultiCamera, _) => "[M] exit",
                         (crate::grid::GridMode::MultiEpisode, true) => {
-                            "[G] exit  [M] -cameras  [+/-] resize  [←/→] page"
+                            "[G] exit  [M] cycle  [+/-] resize  [←/→] page"
                         }
                         (crate::grid::GridMode::MultiEpisode, false) => {
                             let has_multi_cam = self.dataset.as_ref()

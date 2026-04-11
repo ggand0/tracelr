@@ -56,8 +56,11 @@ pub(crate) struct GridView {
     pub start_episode: usize,
     /// Fixed episode for MultiCamera mode.
     pub fixed_episode: usize,
-    /// Number of cameras per episode when tiled (1 = single camera, >1 = camera tiling active).
+    /// Number of cameras per episode when tiled/subgrid (1 = single camera).
     pub cam_count: usize,
+    /// If true, panes are rendered grouped inside episode cells (subgrid layout).
+    /// If false, each pane is a flat cell in the grid (tiled layout).
+    pub subgrid: bool,
     pub playing: bool,
     last_frame_time: Option<Instant>,
     fps: u32,
@@ -107,6 +110,7 @@ impl GridView {
             start_episode,
             fixed_episode: start_episode,
             cam_count: 1,
+            subgrid: false,
             playing: true,
             last_frame_time: None,
             fps: ds.fps,
@@ -133,6 +137,7 @@ impl GridView {
                     start_episode: episode_index,
                     fixed_episode: episode_index,
                     cam_count: 1,
+                    subgrid: false,
                     playing: true,
                     last_frame_time: None,
                     fps: ds.info.fps,
@@ -172,6 +177,7 @@ impl GridView {
             start_episode: episode_index,
             fixed_episode: episode_index,
             cam_count,
+            subgrid: false,
             playing: true,
             last_frame_time: None,
             fps: ds.info.fps,
@@ -230,6 +236,7 @@ impl GridView {
             start_episode,
             fixed_episode: start_episode,
             cam_count,
+            subgrid: false,
             playing: true,
             last_frame_time: None,
             fps: ds.info.fps,
@@ -482,6 +489,15 @@ impl GridView {
 
     /// Render the grid into the given UI area.
     pub fn show(&mut self, ui: &mut egui::Ui, theme_muted: egui::Color32, theme_accent: egui::Color32) {
+        if self.subgrid && self.cam_count > 1 {
+            self.show_subgrid(ui, theme_muted, theme_accent);
+        } else {
+            self.show_flat(ui, theme_muted, theme_accent);
+        }
+    }
+
+    /// Flat rendering: each pane is its own cell in the grid.
+    fn show_flat(&mut self, ui: &mut egui::Ui, theme_muted: egui::Color32, theme_accent: egui::Color32) {
         let available = ui.available_size();
         let cols = self.cols;
         let rows = self.rows;
@@ -499,11 +515,9 @@ impl GridView {
             let y = origin.y + row as f32 * (pane_h + PANE_SPACING);
             let rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(pane_w, pane_h));
 
-            // Allocate interactive area
             let response = ui.allocate_rect(rect, egui::Sense::click());
 
-            // Pane selection (multi-episode mode only)
-            if self.mode == GridMode::MultiEpisode && response.clicked() {
+            if self.mode == GridMode::MultiEpisode && self.cam_count <= 1 && response.clicked() {
                 if self.selected_panes.contains(&idx) {
                     self.selected_panes.remove(&idx);
                 } else {
@@ -511,55 +525,108 @@ impl GridView {
                 }
             }
 
-            // Background
             let is_selected = self.selected_panes.contains(&idx);
-            let bg = if is_selected {
-                egui::Color32::from_gray(50)
-            } else {
-                egui::Color32::from_gray(30)
-            };
+            let bg = if is_selected { egui::Color32::from_gray(50) } else { egui::Color32::from_gray(30) };
             ui.painter().rect_filled(rect, PANE_BORDER_RADIUS, bg);
 
-            // Video frame
-            if let Some(tex) = &pane.current_texture {
-                let tex_size = tex.size_vec2();
-                let img_rect = egui::Rect::from_min_size(
-                    rect.min,
-                    egui::vec2(pane_w, pane_h - PANE_LABEL_HEIGHT),
-                );
-                let scale = (img_rect.width() / tex_size.x)
-                    .min(img_rect.height() / tex_size.y)
-                    .min(1.0);
-                let display_size = tex_size * scale;
-                let img_pos = egui::pos2(
-                    img_rect.center().x - display_size.x / 2.0,
-                    img_rect.center().y - display_size.y / 2.0,
-                );
-                let img_draw_rect = egui::Rect::from_min_size(img_pos, display_size);
-                ui.painter().image(
-                    tex.id(),
-                    img_draw_rect,
-                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                    egui::Color32::WHITE,
-                );
-            }
+            Self::draw_pane_frame(ui, pane, rect, pane_w, pane_h);
 
-            // Pane label at bottom
             let ep_frame = pane.current_frame.saturating_sub(pane.episode_start_frame);
             let label = format!("{}  {}/{}", pane.label, ep_frame + 1, pane.total_frames);
             let label_pos = egui::pos2(rect.min.x + PANE_SPACING, rect.max.y - PANE_LABEL_HEIGHT + 2.0);
             ui.painter().text(
-                label_pos,
-                egui::Align2::LEFT_TOP,
-                &label,
+                label_pos, egui::Align2::LEFT_TOP, &label,
                 egui::FontId::monospace(PANE_LABEL_FONT_SIZE),
                 if is_selected { theme_accent } else { theme_muted },
             );
 
-            // Selection border
             if is_selected {
                 ui.painter().rect_stroke(rect, PANE_BORDER_RADIUS, egui::Stroke::new(PANE_BORDER_WIDTH, theme_accent), egui::StrokeKind::Outside);
             }
+        }
+    }
+
+    /// Subgrid rendering: each episode cell contains cam_count sub-panes.
+    fn show_subgrid(&mut self, ui: &mut egui::Ui, theme_muted: egui::Color32, _theme_accent: egui::Color32) {
+        let available = ui.available_size();
+        let cols = self.cols;
+        let rows = self.rows;
+        let cam_count = self.cam_count;
+
+        let cell_w = (available.x - PANE_SPACING * (cols as f32 - 1.0)) / cols as f32;
+        let cell_h = (available.y - PANE_SPACING * (rows as f32 - 1.0)) / rows as f32;
+
+        let (sub_cols, sub_rows) = camera_grid_size(cam_count);
+        let sub_spacing = 2.0_f32;
+
+        let origin = ui.cursor().min;
+        let ep_count = self.panes.len() / cam_count.max(1);
+
+        for cell_idx in 0..ep_count {
+            let cell_col = cell_idx % cols;
+            let cell_row = cell_idx / cols;
+            if cell_row >= rows { break; }
+
+            let cx = origin.x + cell_col as f32 * (cell_w + PANE_SPACING);
+            let cy = origin.y + cell_row as f32 * (cell_h + PANE_SPACING);
+            let cell_rect = egui::Rect::from_min_size(egui::pos2(cx, cy), egui::vec2(cell_w, cell_h));
+
+            ui.allocate_rect(cell_rect, egui::Sense::hover());
+            ui.painter().rect_filled(cell_rect, PANE_BORDER_RADIUS, egui::Color32::from_gray(30));
+
+            // Sub-pane area (above label)
+            let content_h = cell_h - PANE_LABEL_HEIGHT;
+            let sub_w = (cell_w - sub_spacing * (sub_cols as f32 - 1.0)) / sub_cols as f32;
+            let sub_h = (content_h - sub_spacing * (sub_rows as f32 - 1.0)) / sub_rows as f32;
+
+            for cam_idx in 0..cam_count {
+                let pane_idx = cell_idx * cam_count + cam_idx;
+                let pane = match self.panes.get(pane_idx) {
+                    Some(p) => p,
+                    None => break,
+                };
+
+                let sc = cam_idx % sub_cols;
+                let sr = cam_idx / sub_cols;
+                let sx = cx + sc as f32 * (sub_w + sub_spacing);
+                let sy = cy + sr as f32 * (sub_h + sub_spacing);
+                let sub_rect = egui::Rect::from_min_size(egui::pos2(sx, sy), egui::vec2(sub_w, sub_h));
+
+                Self::draw_pane_frame(ui, pane, sub_rect, sub_w, sub_h);
+            }
+
+            // Episode label at bottom of cell
+            let first_pane = &self.panes[cell_idx * cam_count];
+            let ep_frame = first_pane.current_frame.saturating_sub(first_pane.episode_start_frame);
+            let label = format!("ep {:03}  {}/{}", first_pane.episode_index, ep_frame + 1, first_pane.total_frames);
+            let label_pos = egui::pos2(cell_rect.min.x + PANE_SPACING, cell_rect.max.y - PANE_LABEL_HEIGHT + 2.0);
+            ui.painter().text(
+                label_pos, egui::Align2::LEFT_TOP, &label,
+                egui::FontId::monospace(PANE_LABEL_FONT_SIZE),
+                theme_muted,
+            );
+        }
+    }
+
+    /// Draw a video frame texture into a rect, centered and scaled to fit.
+    fn draw_pane_frame(ui: &egui::Ui, pane: &GridPane, rect: egui::Rect, w: f32, h: f32) {
+        if let Some(tex) = &pane.current_texture {
+            let tex_size = tex.size_vec2();
+            let img_rect = egui::Rect::from_min_size(rect.min, egui::vec2(w, h));
+            let scale = (img_rect.width() / tex_size.x)
+                .min(img_rect.height() / tex_size.y)
+                .min(1.0);
+            let display_size = tex_size * scale;
+            let img_pos = egui::pos2(
+                img_rect.center().x - display_size.x / 2.0,
+                img_rect.center().y - display_size.y / 2.0,
+            );
+            let img_draw_rect = egui::Rect::from_min_size(img_pos, display_size);
+            ui.painter().image(
+                tex.id(), img_draw_rect,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
         }
     }
 
