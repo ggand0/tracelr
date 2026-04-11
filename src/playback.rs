@@ -347,18 +347,21 @@ impl App {
     pub(crate) fn enter_grid_with_camera_display(&mut self, ctx: &egui::Context, start_episode: usize) {
         use crate::app::CameraDisplay;
         match self.camera_display {
-            CameraDisplay::Tiled | CameraDisplay::Subgrid => {
+            CameraDisplay::Tiled => {
                 if let Some(ds) = &self.dataset {
-                    let mut grid = GridView::new_tiled(
+                    let grid = GridView::new_tiled(
                         ctx, self.grid_cols, self.grid_rows,
                         start_episode, ds, &self.selected_cameras,
                     );
-                    if self.camera_display == CameraDisplay::Subgrid {
-                        grid.subgrid = true;
-                        // Restore outer grid dims for subgrid rendering
-                        grid.cols = self.grid_cols;
-                        grid.rows = self.grid_rows;
-                    }
+                    self.grid_view = Some(grid);
+                }
+            }
+            CameraDisplay::Subgrid => {
+                if let Some(ds) = &self.dataset {
+                    let grid = GridView::new_subgrid(
+                        ctx, self.grid_cols, self.grid_rows,
+                        start_episode, ds, &self.selected_cameras,
+                    );
                     self.grid_view = Some(grid);
                 }
             }

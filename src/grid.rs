@@ -245,6 +245,62 @@ impl GridView {
         }
     }
 
+    /// Create a subgrid multi-episode grid where each episode cell contains cam_count sub-panes.
+    /// Outer grid is `grid_cols × grid_rows` (user's layout). Total panes = episodes × cam_count.
+    pub fn new_subgrid(
+        ctx: &egui::Context,
+        grid_cols: usize,
+        grid_rows: usize,
+        start_episode: usize,
+        ds: &crate::dataset::LeRobotDataset,
+        selected_cameras: &[bool],
+    ) -> Self {
+        let selected_keys: Vec<&str> = ds.info.video_keys.iter().enumerate()
+            .filter(|(i, _)| selected_cameras.get(*i).copied().unwrap_or(false))
+            .map(|(_, k)| k.as_str())
+            .collect();
+        let cam_count = selected_keys.len().max(1);
+        let total_cells = grid_cols * grid_rows;
+        let mut panes = Vec::with_capacity(total_cells * cam_count);
+
+        for cell in 0..total_cells {
+            let ep_idx = start_episode + cell;
+            let ep = match ds.episodes.get(ep_idx) {
+                Some(ep) => ep,
+                None => break,
+            };
+            for &video_key in &selected_keys {
+                let video_path = ds.video_path(ep_idx, video_key);
+                let (from, to) = ds.episode_time_range(ep_idx, video_key);
+                let seek_range = if to > from { Some((from, to)) } else { None };
+                let cam_name = crate::dataset::camera_display_name(video_key);
+                let label = format!("ep {:03} {}", ep_idx, cam_name);
+                if let Some(pane) = Self::create_pane(
+                    ctx, ep_idx, video_key, &label,
+                    &video_path, ep.length, seek_range, ds.info.fps,
+                ) {
+                    panes.push(pane);
+                }
+            }
+        }
+
+        Self {
+            panes,
+            cols: grid_cols,
+            rows: grid_rows,
+            mode: GridMode::MultiEpisode,
+            start_episode,
+            fixed_episode: start_episode,
+            cam_count,
+            subgrid: true,
+            playing: true,
+            last_frame_time: None,
+            fps: ds.info.fps,
+            selected_panes: HashSet::new(),
+            frame_slider_dragging: false,
+        }
+    }
+
     /// Number of episodes visible when tiled.
     pub fn episodes_shown(&self) -> usize {
         if self.cam_count > 1 {
@@ -449,7 +505,7 @@ impl GridView {
         self.rebuild(ctx, ds);
     }
 
-    /// Page episodes in tiled mode (shift by episodes_shown).
+    /// Page episodes in tiled/subgrid mode (shift by episodes_shown).
     pub fn navigate_page_tiled(
         &mut self,
         delta: isize,
@@ -472,7 +528,11 @@ impl GridView {
             if self.start_episode == 0 { return; }
             self.start_episode.saturating_sub(eps_shown)
         };
-        *self = Self::new_tiled(ctx, grid_cols, grid_rows, new_start, ds, selected_cameras);
+        if self.subgrid {
+            *self = Self::new_subgrid(ctx, grid_cols, grid_rows, new_start, ds, selected_cameras);
+        } else {
+            *self = Self::new_tiled(ctx, grid_cols, grid_rows, new_start, ds, selected_cameras);
+        }
     }
 
     /// Render the grid into the given UI area.
