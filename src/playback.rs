@@ -468,9 +468,10 @@ impl App {
     }
 
     /// Toggle tiled/matrix camera view.
-    /// From single-video: enters multi-episode grid in tiled mode.
-    /// From multi-episode grid: toggles Tiled on/off.
-    /// From multi-camera grid: no-op.
+    /// - From single-video: enters multi-episode grid in Tiled mode.
+    /// - From multi-episode grid: toggles Tiled on/off.
+    /// - From multi-camera grid (single episode): adds episode dimension,
+    ///   entering multi-episode grid in Tiled mode.
     pub(crate) fn toggle_tiled(&mut self, ctx: &egui::Context) {
         let has_multi = self.dataset.as_ref()
             .map(|ds| ds.info.video_keys.len() > 1)
@@ -491,13 +492,16 @@ impl App {
                     self.enter_grid_with_camera_display(ctx, start);
                 }
                 GridMode::MultiCamera => {
-                    // No-op in single-episode multi-camera mode
+                    // Promote to multi-episode grid in Tiled mode
+                    let ep = grid.fixed_episode;
+                    self.camera_display = CameraDisplay::Tiled;
+                    self.enter_grid_with_camera_display(ctx, ep);
                 }
             }
             return;
         }
 
-        // From single-video: enter grid in tiled mode
+        // From single-video: enter grid in Tiled mode
         self.exit_video_mode();
         self.camera_display = CameraDisplay::Tiled;
         self.enter_grid_with_camera_display(ctx, self.current_episode);
