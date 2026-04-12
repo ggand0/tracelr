@@ -545,6 +545,7 @@ impl GridView {
         let pane_h = (available.y - PANE_SPACING * (rows as f32 - 1.0)) / rows as f32;
 
         let origin = ui.cursor().min;
+        let mut clicked_episode: Option<usize> = None;
 
         for (idx, pane) in self.panes.iter().enumerate() {
             let col = idx % cols;
@@ -556,12 +557,8 @@ impl GridView {
 
             let response = ui.allocate_rect(rect, egui::Sense::click());
 
-            if self.mode == GridMode::MultiEpisode && self.cam_count <= 1 && response.clicked() {
-                if self.selected_panes.contains(&idx) {
-                    self.selected_panes.remove(&idx);
-                } else {
-                    self.selected_panes.insert(idx);
-                }
+            if self.mode == GridMode::MultiEpisode && response.clicked() {
+                clicked_episode = Some(pane.episode_index);
             }
 
             let is_selected = self.selected_panes.contains(&idx);
@@ -583,10 +580,14 @@ impl GridView {
                 ui.painter().rect_stroke(rect, PANE_BORDER_RADIUS, egui::Stroke::new(PANE_BORDER_WIDTH, theme_accent), egui::StrokeKind::Outside);
             }
         }
+
+        if let Some(ep) = clicked_episode {
+            self.toggle_episode_selection(ep);
+        }
     }
 
     /// Subgrid rendering: each episode cell contains cam_count sub-panes.
-    fn show_subgrid(&mut self, ui: &mut egui::Ui, theme_muted: egui::Color32, _theme_accent: egui::Color32) {
+    fn show_subgrid(&mut self, ui: &mut egui::Ui, theme_muted: egui::Color32, theme_accent: egui::Color32) {
         let available = ui.available_size();
         let cols = self.cols;
         let rows = self.rows;
@@ -601,6 +602,11 @@ impl GridView {
         let origin = ui.cursor().min;
         let ep_count = self.panes.len() / cam_count.max(1);
 
+        // Subtle border color for cell separation (slightly brighter than bg)
+        let cell_border = egui::Color32::from_gray(70);
+
+        let mut clicked_episode: Option<usize> = None;
+
         for cell_idx in 0..ep_count {
             let cell_col = cell_idx % cols;
             let cell_row = cell_idx / cols;
@@ -610,8 +616,19 @@ impl GridView {
             let cy = origin.y + cell_row as f32 * (cell_h + PANE_SPACING);
             let cell_rect = egui::Rect::from_min_size(egui::pos2(cx, cy), egui::vec2(cell_w, cell_h));
 
-            ui.allocate_rect(cell_rect, egui::Sense::hover());
-            ui.painter().rect_filled(cell_rect, PANE_BORDER_RADIUS, egui::Color32::from_gray(30));
+            let response = ui.allocate_rect(cell_rect, egui::Sense::click());
+            let first_pane_idx = cell_idx * cam_count;
+            let episode_index = self.panes.get(first_pane_idx).map(|p| p.episode_index);
+
+            if response.clicked() {
+                if let Some(ep) = episode_index {
+                    clicked_episode = Some(ep);
+                }
+            }
+
+            let is_selected = self.selected_panes.contains(&first_pane_idx);
+            let bg = if is_selected { egui::Color32::from_gray(50) } else { egui::Color32::from_gray(30) };
+            ui.painter().rect_filled(cell_rect, PANE_BORDER_RADIUS, bg);
 
             // Sub-pane area (above label)
             let content_h = cell_h - PANE_LABEL_HEIGHT;
@@ -635,15 +652,50 @@ impl GridView {
             }
 
             // Episode label at bottom of cell
-            let first_pane = &self.panes[cell_idx * cam_count];
+            let first_pane = &self.panes[first_pane_idx];
             let ep_frame = first_pane.current_frame.saturating_sub(first_pane.episode_start_frame);
             let label = format!("ep {:03}  {}/{}", first_pane.episode_index, ep_frame + 1, first_pane.total_frames);
             let label_pos = egui::pos2(cell_rect.min.x + PANE_SPACING, cell_rect.max.y - PANE_LABEL_HEIGHT + 2.0);
             ui.painter().text(
                 label_pos, egui::Align2::LEFT_TOP, &label,
                 egui::FontId::monospace(PANE_LABEL_FONT_SIZE),
-                theme_muted,
+                if is_selected { theme_accent } else { theme_muted },
             );
+
+            // Cell boundary: subtle border always visible to separate episodes
+            let stroke = if is_selected {
+                egui::Stroke::new(PANE_BORDER_WIDTH, theme_accent)
+            } else {
+                egui::Stroke::new(1.0, cell_border)
+            };
+            ui.painter().rect_stroke(cell_rect, PANE_BORDER_RADIUS, stroke, egui::StrokeKind::Outside);
+        }
+
+        if let Some(ep) = clicked_episode {
+            self.toggle_episode_selection(ep);
+        }
+    }
+
+    /// Toggle selection of all panes for an episode. Used by multi-cam click handlers.
+    fn toggle_episode_selection(&mut self, episode_index: usize) {
+        // Find all pane indices with this episode_index
+        let matching: Vec<usize> = self.panes.iter().enumerate()
+            .filter(|(_, p)| p.episode_index == episode_index)
+            .map(|(i, _)| i)
+            .collect();
+        if matching.is_empty() {
+            return;
+        }
+        // If any of the matching panes are selected, deselect all; otherwise select all
+        let any_selected = matching.iter().any(|i| self.selected_panes.contains(i));
+        if any_selected {
+            for i in matching {
+                self.selected_panes.remove(&i);
+            }
+        } else {
+            for i in matching {
+                self.selected_panes.insert(i);
+            }
         }
     }
 
