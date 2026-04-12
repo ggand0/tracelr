@@ -98,7 +98,7 @@ impl App {
                     if has_multi_cam {
                         ui.separator();
                         ui.label(
-                            egui::RichText::new("Matrix Rows")
+                            egui::RichText::new("Tiled View Rows  [N]")
                                 .color(self.theme.muted)
                                 .small(),
                         );

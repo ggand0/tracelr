@@ -427,10 +427,13 @@ impl App {
                     if !has_multi { return; }
 
                     use crate::app::CameraDisplay;
-                    // Toggle: SingleCamera ↔ Subgrid (Tiled is entered via menu slider)
+                    // M toggles between SingleCamera and a multi-cam layout.
+                    // From Tiled (a multi-cam layout), M flips to the other multi-cam
+                    // layout (Subgrid), not back to SingleCamera.
                     self.camera_display = match self.camera_display {
                         CameraDisplay::SingleCamera => CameraDisplay::Subgrid,
-                        CameraDisplay::Subgrid | CameraDisplay::Tiled => CameraDisplay::SingleCamera,
+                        CameraDisplay::Subgrid => CameraDisplay::SingleCamera,
+                        CameraDisplay::Tiled => CameraDisplay::Subgrid,
                     };
                     self.enter_grid_with_camera_display(ctx, start);
                     return;
