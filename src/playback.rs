@@ -307,25 +307,35 @@ impl App {
         self.init_cache(ctx);
 
         if self.grid_view.is_some() {
+            // Capture per-pane relative frames before rebuild
+            let preserved: Vec<usize> = self.grid_view.as_ref()
+                .map(|g| g.all_pane_episodes().iter().map(|(_, rel)| *rel).collect())
+                .unwrap_or_default();
             // Rebuild grid with new camera paths
             if let Some(gds) = grid_dataset!(self) {
                 if let Some(grid) = &mut self.grid_view {
                     let start = grid.start_episode;
                     *grid = GridView::new(ctx, grid.cols, grid.rows, start, &gds);
+                    grid.seek_panes_to_relative(&preserved);
                 }
             }
         } else if self.viewing_video {
-            // Re-enter video mode to reload the player with the new camera,
-            // then seek back to the preserved frame position.
+            // Re-enter video mode to reload the player with the new camera.
             self.enter_video_mode(ctx);
+            let abs_frame = self.episode_start_frame + preserved_relative_frame;
             if let Some(player) = &mut self.player {
-                let abs_frame = self.episode_start_frame + preserved_relative_frame;
                 player.seek(abs_frame);
-                self.current_frame = abs_frame;
-                self.playing = was_playing;
-                if !was_playing {
-                    self.last_frame_time = None;
+                // Drain intermediate keyframe frames and display the exact target.
+                // This prevents the "paused-poll shows keyframe" bug where the paused
+                // update loop would pick up a frame before the target.
+                if let Some(tex) = player.drain_to_frame(abs_frame, 200) {
+                    self.current_texture = Some(tex);
                 }
+                self.current_frame = abs_frame;
+            }
+            self.playing = was_playing;
+            if !was_playing {
+                self.last_frame_time = None;
             }
         }
     }

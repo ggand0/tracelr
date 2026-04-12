@@ -737,6 +737,22 @@ impl GridView {
             .collect()
     }
 
+    /// Seek each pane to a preserved relative frame position. Used by camera
+    /// switching to preserve per-pane playback position across grid rebuild.
+    /// `relative_frames` should be in the same order as panes (pane-index-aligned).
+    /// Drains intermediate keyframe frames so the displayed frame matches the target.
+    pub fn seek_panes_to_relative(&mut self, relative_frames: &[usize]) {
+        for (pane, &rel) in self.panes.iter_mut().zip(relative_frames.iter()) {
+            let clamped = rel.min(pane.total_frames.saturating_sub(1));
+            let abs_frame = pane.episode_start_frame + clamped;
+            pane.player.seek(abs_frame);
+            if let Some(tex) = pane.player.drain_to_frame(abs_frame, 200) {
+                pane.current_texture = Some(tex);
+            }
+            pane.current_frame = abs_frame;
+        }
+    }
+
     /// Maximum episode length across all panes (for slider range).
     pub fn max_episode_length(&self) -> usize {
         self.panes.iter().map(|p| p.total_frames).max().unwrap_or(0)
