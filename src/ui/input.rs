@@ -136,11 +136,7 @@ impl App {
             return;
         }
 
-        // Single-video mode
-        if escape_pressed && self.viewing_video {
-            self.exit_video_mode();
-            return;
-        }
+        // Single-video mode: Escape is a no-op (already the initial view).
         if enter_pressed && !self.viewing_video {
             self.enter_video_mode(ctx);
             return;
