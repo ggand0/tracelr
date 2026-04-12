@@ -12,6 +12,15 @@ const PANE_LABEL_FONT_SIZE: f32 = 11.0;
 const PANE_BORDER_RADIUS: f32 = 2.0;
 const PANE_BORDER_WIDTH: f32 = 2.0;
 
+/// Preserved state captured before a grid rebuild and restored after.
+/// Keeps per-pane frame positions, playing state, and pane selection
+/// stable across rebuilds (camera switch, checkbox toggle, etc.).
+pub(crate) struct PreservedGridState {
+    pub relative_frames: Vec<usize>,
+    pub playing: bool,
+    pub selected_panes: HashSet<usize>,
+}
+
 /// What the grid is displaying.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GridMode {
@@ -751,6 +760,32 @@ impl GridView {
             }
             pane.current_frame = abs_frame;
         }
+    }
+
+    /// Capture preserved state (per-pane frames, playing, selection) before rebuild.
+    pub fn preserved_state(&self) -> PreservedGridState {
+        PreservedGridState {
+            relative_frames: self.panes.iter()
+                .map(|p| p.current_frame.saturating_sub(p.episode_start_frame))
+                .collect(),
+            playing: self.playing,
+            selected_panes: self.selected_panes.clone(),
+        }
+    }
+
+    /// Restore preserved state after rebuild. If the new pane count differs from
+    /// the captured state, all panes are seeked to the first captured frame
+    /// (the synchronized playback position).
+    pub fn restore_state(&mut self, state: &PreservedGridState) {
+        let frames = if state.relative_frames.len() == self.panes.len() {
+            state.relative_frames.clone()
+        } else {
+            let sync = state.relative_frames.first().copied().unwrap_or(0);
+            vec![sync; self.panes.len()]
+        };
+        self.seek_panes_to_relative(&frames);
+        self.playing = state.playing;
+        self.selected_panes = state.selected_panes.clone();
     }
 
     /// Maximum episode length across all panes (for slider range).

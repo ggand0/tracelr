@@ -374,15 +374,8 @@ impl eframe::App for App {
         }
         if self.pending_multi_camera_rebuild {
             self.pending_multi_camera_rebuild = false;
-            // Capture preservation state before rebuild
-            let preserved_rel_frame = self.grid_view.as_ref()
-                .map(|g| g.current_relative_frame())
-                .unwrap_or(0);
-            let was_playing = self.grid_view.as_ref().map(|g| g.playing).unwrap_or(true);
-            let preserved_selection = self.grid_view.as_ref()
-                .map(|g| g.selected_panes.clone())
-                .unwrap_or_default();
-
+            // Capture state before rebuild so position/playing/selection are preserved
+            let state = self.grid_view.as_ref().map(|g| g.preserved_state());
             let rebuild_info = self.grid_view.as_ref().map(|g| (g.mode, g.fixed_episode, g.start_episode));
             if let Some((mode, fixed_ep, start_ep)) = rebuild_info {
                 match mode {
@@ -400,13 +393,8 @@ impl eframe::App for App {
                     _ => {}
                 }
 
-                // Restore position, playing state, and selection
-                if let Some(grid) = &mut self.grid_view {
-                    let new_pane_count = grid.pane_count();
-                    let preserved_frames = vec![preserved_rel_frame; new_pane_count];
-                    grid.seek_panes_to_relative(&preserved_frames);
-                    grid.playing = was_playing;
-                    grid.selected_panes = preserved_selection;
+                if let (Some(grid), Some(state)) = (&mut self.grid_view, &state) {
+                    grid.restore_state(state);
                 }
             }
         }
