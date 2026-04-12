@@ -307,16 +307,18 @@ impl App {
         self.init_cache(ctx);
 
         if self.grid_view.is_some() {
-            // Capture per-pane relative frames before rebuild
+            // Capture per-pane relative frames and playing state before rebuild
             let preserved: Vec<usize> = self.grid_view.as_ref()
                 .map(|g| g.all_pane_episodes().iter().map(|(_, rel)| *rel).collect())
                 .unwrap_or_default();
+            let grid_was_playing = self.grid_view.as_ref().map(|g| g.playing).unwrap_or(true);
             // Rebuild grid with new camera paths
             if let Some(gds) = grid_dataset!(self) {
                 if let Some(grid) = &mut self.grid_view {
                     let start = grid.start_episode;
                     *grid = GridView::new(ctx, grid.cols, grid.rows, start, &gds);
                     grid.seek_panes_to_relative(&preserved);
+                    grid.playing = grid_was_playing;
                 }
             }
         } else if self.viewing_video {
