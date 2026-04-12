@@ -451,25 +451,39 @@ impl App {
     }
 
     /// Toggle tiled/matrix camera view.
-    /// From multi-episode grid: toggle Tiled on/off.
-    /// From other modes: no-op.
+    /// From single-video: enters multi-episode grid in tiled mode.
+    /// From multi-episode grid: toggles Tiled on/off.
+    /// From multi-camera grid: no-op.
     pub(crate) fn toggle_tiled(&mut self, ctx: &egui::Context) {
-        if let Some(grid) = &self.grid_view {
-            if grid.mode != GridMode::MultiEpisode { return; }
-            let has_multi = self.dataset.as_ref()
-                .map(|ds| ds.info.video_keys.len() > 1)
-                .unwrap_or(false);
-            if !has_multi { return; }
+        let has_multi = self.dataset.as_ref()
+            .map(|ds| ds.info.video_keys.len() > 1)
+            .unwrap_or(false);
+        if !has_multi { return; }
 
-            let start = grid.start_episode;
-            use crate::app::CameraDisplay;
-            if self.camera_display == CameraDisplay::Tiled {
-                self.camera_display = CameraDisplay::SingleCamera;
-            } else {
-                self.camera_display = CameraDisplay::Tiled;
+        use crate::app::CameraDisplay;
+
+        if let Some(grid) = &self.grid_view {
+            match grid.mode {
+                GridMode::MultiEpisode => {
+                    let start = grid.start_episode;
+                    self.camera_display = if self.camera_display == CameraDisplay::Tiled {
+                        CameraDisplay::SingleCamera
+                    } else {
+                        CameraDisplay::Tiled
+                    };
+                    self.enter_grid_with_camera_display(ctx, start);
+                }
+                GridMode::MultiCamera => {
+                    // No-op in single-episode multi-camera mode
+                }
             }
-            self.enter_grid_with_camera_display(ctx, start);
+            return;
         }
+
+        // From single-video: enter grid in tiled mode
+        self.exit_video_mode();
+        self.camera_display = CameraDisplay::Tiled;
+        self.enter_grid_with_camera_display(ctx, self.current_episode);
     }
 
     /// Resize grid by delta steps. Grid sizes cycle through: 1x1, 2x2, 3x3, 4x4.
