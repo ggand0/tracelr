@@ -361,6 +361,40 @@ impl App {
         self.switch_camera(new_idx, ctx);
     }
 
+    /// Reset to the initial single-video view: single-camera grid disabled,
+    /// default camera (wrist if present), preserving the current episode
+    /// (or grid's start episode). Used as a "panic button" via Escape.
+    pub(crate) fn reset_to_initial_view(&mut self, ctx: &egui::Context) {
+        // Preserve the episode the user was looking at
+        if let Some(grid) = &self.grid_view {
+            self.current_episode = grid.start_episode;
+        }
+        self.grid_view = None;
+        self.camera_display = crate::app::CameraDisplay::SingleCamera;
+
+        // Find the default camera (wrist or index 0) and switch if different
+        let default_idx = self.dataset.as_ref().map(|ds| {
+            ds.info.video_keys.iter()
+                .position(|k| k.contains("wrist"))
+                .unwrap_or(0)
+        });
+        if let Some(idx) = default_idx {
+            if idx != self.current_video_key_index {
+                self.current_video_key_index = idx;
+                self.rebuild_video_paths();
+                self.decode_cache.clear();
+                self.episode_cache = None;
+                self.init_cache(ctx);
+            }
+            // Reset all camera checkboxes
+            if let Some(ds) = &self.dataset {
+                self.selected_cameras = vec![true; ds.info.video_keys.len()];
+            }
+        }
+
+        self.enter_video_mode(ctx);
+    }
+
     /// Toggle the episode-grid dimension.
     /// - From single-video: enter multi-episode grid (respects camera_display).
     /// - From multi-episode grid: exit to single-video.

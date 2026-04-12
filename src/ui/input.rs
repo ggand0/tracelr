@@ -109,11 +109,7 @@ impl App {
                 }
             }
             if escape_pressed {
-                if let Some(grid) = &self.grid_view {
-                    self.current_episode = grid.start_episode;
-                }
-                self.grid_view = None;
-                self.enter_video_mode(ctx);
+                self.reset_to_initial_view(ctx);
                 return;
             }
 
