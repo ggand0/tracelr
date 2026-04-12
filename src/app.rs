@@ -369,20 +369,37 @@ impl eframe::App for App {
         }
         if self.pending_multi_camera_rebuild {
             self.pending_multi_camera_rebuild = false;
-            if let Some(grid) = &self.grid_view {
-                match grid.mode {
+            // Capture preservation state before rebuild
+            let preserved_rel_frame = self.grid_view.as_ref()
+                .map(|g| g.current_relative_frame())
+                .unwrap_or(0);
+            let was_playing = self.grid_view.as_ref().map(|g| g.playing).unwrap_or(true);
+            let preserved_selection = self.grid_view.as_ref()
+                .map(|g| g.selected_panes.clone())
+                .unwrap_or_default();
+
+            let rebuild_info = self.grid_view.as_ref().map(|g| (g.mode, g.fixed_episode, g.start_episode, g.cam_count));
+            if let Some((mode, fixed_ep, start_ep, cam_count)) = rebuild_info {
+                match mode {
                     crate::grid::GridMode::MultiCamera => {
-                        let ep = grid.fixed_episode;
                         if let Some(ds) = &self.dataset {
-                            let grid = GridView::new_multi_camera(ctx, ep, ds, &self.selected_cameras);
+                            let grid = GridView::new_multi_camera(ctx, fixed_ep, ds, &self.selected_cameras);
                             self.grid_view = Some(grid);
                         }
                     }
-                    crate::grid::GridMode::MultiEpisode if grid.cam_count > 1 => {
-                        let start = grid.start_episode;
-                        self.enter_grid_with_camera_display(ctx, start);
+                    crate::grid::GridMode::MultiEpisode if cam_count > 1 => {
+                        self.enter_grid_with_camera_display(ctx, start_ep);
                     }
                     _ => {}
+                }
+
+                // Restore position, playing state, and selection
+                if let Some(grid) = &mut self.grid_view {
+                    let new_pane_count = grid.pane_count();
+                    let preserved_frames = vec![preserved_rel_frame; new_pane_count];
+                    grid.seek_panes_to_relative(&preserved_frames);
+                    grid.playing = was_playing;
+                    grid.selected_panes = preserved_selection;
                 }
             }
         }
