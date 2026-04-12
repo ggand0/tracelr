@@ -106,7 +106,9 @@ impl App {
                         if ui.add(egui::Slider::new(&mut tiled_rows, 1..=10).text("rows")).changed() {
                             self.grid_rows = tiled_rows;
                             self.camera_display = crate::app::CameraDisplay::Tiled;
-                            let start = self.grid_view.as_ref().map(|g| g.start_episode).unwrap_or(0);
+                            let start = self.grid_view.as_ref()
+                                .map(|g| g.start_episode)
+                                .unwrap_or(self.current_episode);
                             if !in_grid {
                                 self.exit_video_mode();
                             }
