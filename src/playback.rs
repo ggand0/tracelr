@@ -361,14 +361,28 @@ impl App {
         self.switch_camera(new_idx, ctx);
     }
 
-    /// Toggle between single-video and multi-episode grid view.
-    /// Respects camera_display: enters the appropriate mode directly.
+    /// Toggle the episode-grid dimension.
+    /// - From single-video: enter multi-episode grid (respects camera_display).
+    /// - From multi-episode grid: exit to single-video.
+    /// - From multi-camera grid (single episode, multi-cam): add episode dimension
+    ///   by entering multi-episode grid in Subgrid mode (preserves the multi-cam
+    ///   layout while adding episodes).
     pub(crate) fn toggle_grid_view(&mut self, ctx: &egui::Context) {
         if let Some(grid) = &self.grid_view {
-            // Preserve the grid's current batch start when returning to single view
-            self.current_episode = grid.start_episode;
-            self.grid_view = None;
-            self.enter_video_mode(ctx);
+            match grid.mode {
+                GridMode::MultiEpisode => {
+                    // Exit grid → single video, preserve batch start
+                    self.current_episode = grid.start_episode;
+                    self.grid_view = None;
+                    self.enter_video_mode(ctx);
+                }
+                GridMode::MultiCamera => {
+                    // Add episode dimension → multi-episode grid in Subgrid mode
+                    let ep = grid.fixed_episode;
+                    self.camera_display = crate::app::CameraDisplay::Subgrid;
+                    self.enter_grid_with_camera_display(ctx, ep);
+                }
+            }
         } else {
             self.exit_video_mode();
             self.enter_grid_with_camera_display(ctx, self.current_episode);
