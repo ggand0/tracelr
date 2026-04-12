@@ -528,7 +528,7 @@ impl GridView {
 
     /// Render the grid into the given UI area.
     pub fn show(&mut self, ui: &mut egui::Ui, theme_muted: egui::Color32, theme_accent: egui::Color32) {
-        if self.subgrid && self.cam_count > 1 {
+        if self.subgrid {
             self.show_subgrid(ui, theme_muted, theme_accent);
         } else {
             self.show_flat(ui, theme_muted, theme_accent);

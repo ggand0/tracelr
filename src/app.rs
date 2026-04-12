@@ -284,10 +284,15 @@ impl App {
             .collect();
     }
 
-    /// Whether the grid shows multiple cameras (MultiCamera mode or tiled MultiEpisode).
+    /// Whether the grid is in a multi-camera mode (MultiCamera grid, or MultiEpisode
+    /// with Tiled/Subgrid camera_display). Remains true even when only 1 camera is
+    /// selected, so the info panel keeps showing the camera checkboxes.
     pub(crate) fn is_camera_grid(&self) -> bool {
         self.grid_view.as_ref()
-            .map(|g| g.mode == crate::grid::GridMode::MultiCamera || g.cam_count > 1)
+            .map(|g| {
+                g.mode == crate::grid::GridMode::MultiCamera
+                    || self.camera_display != CameraDisplay::SingleCamera
+            })
             .unwrap_or(false)
     }
 
@@ -378,8 +383,8 @@ impl eframe::App for App {
                 .map(|g| g.selected_panes.clone())
                 .unwrap_or_default();
 
-            let rebuild_info = self.grid_view.as_ref().map(|g| (g.mode, g.fixed_episode, g.start_episode, g.cam_count));
-            if let Some((mode, fixed_ep, start_ep, cam_count)) = rebuild_info {
+            let rebuild_info = self.grid_view.as_ref().map(|g| (g.mode, g.fixed_episode, g.start_episode));
+            if let Some((mode, fixed_ep, start_ep)) = rebuild_info {
                 match mode {
                     crate::grid::GridMode::MultiCamera => {
                         if let Some(ds) = &self.dataset {
@@ -387,7 +392,9 @@ impl eframe::App for App {
                             self.grid_view = Some(grid);
                         }
                     }
-                    crate::grid::GridMode::MultiEpisode if cam_count > 1 => {
+                    crate::grid::GridMode::MultiEpisode
+                        if self.camera_display != CameraDisplay::SingleCamera =>
+                    {
                         self.enter_grid_with_camera_display(ctx, start_ep);
                     }
                     _ => {}
