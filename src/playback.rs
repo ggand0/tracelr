@@ -294,6 +294,10 @@ impl App {
         let camera_name = ds.info.video_keys[new_index].clone();
         log::info!("Switching camera to [{}] {}", new_index, camera_name);
 
+        // Preserve playback position across camera switch
+        let preserved_relative_frame = self.current_frame.saturating_sub(self.episode_start_frame);
+        let was_playing = self.playing;
+
         self.current_video_key_index = new_index;
         self.rebuild_video_paths();
 
@@ -311,8 +315,18 @@ impl App {
                 }
             }
         } else if self.viewing_video {
-            // Re-enter video mode to reload the player with the new camera
+            // Re-enter video mode to reload the player with the new camera,
+            // then seek back to the preserved frame position.
             self.enter_video_mode(ctx);
+            if let Some(player) = &mut self.player {
+                let abs_frame = self.episode_start_frame + preserved_relative_frame;
+                player.seek(abs_frame);
+                self.current_frame = abs_frame;
+                self.playing = was_playing;
+                if !was_playing {
+                    self.last_frame_time = None;
+                }
+            }
         }
     }
 
