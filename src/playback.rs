@@ -364,7 +364,9 @@ impl App {
     /// Toggle between single-video and multi-episode grid view.
     /// Respects camera_display: enters the appropriate mode directly.
     pub(crate) fn toggle_grid_view(&mut self, ctx: &egui::Context) {
-        if self.grid_view.is_some() {
+        if let Some(grid) = &self.grid_view {
+            // Preserve the grid's current batch start when returning to single view
+            self.current_episode = grid.start_episode;
             self.grid_view = None;
             self.enter_video_mode(ctx);
         } else {
