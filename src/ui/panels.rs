@@ -317,7 +317,9 @@ impl App {
                 });
             }
 
-            if ds.info.video_keys.len() > 1 {
+            // Show ComboBox only in single-camera mode; multi-cam modes use checkboxes
+            let in_multi_cam = self.is_camera_grid();
+            if ds.info.video_keys.len() > 1 && !in_multi_cam {
                 let camera_names: Vec<(usize, String)> = ds
                     .info
                     .video_keys
@@ -348,7 +350,7 @@ impl App {
                         self.pending_camera_switch = Some(selected);
                     }
                 });
-            } else if !ds.info.video_keys.is_empty() {
+            } else if !ds.info.video_keys.is_empty() && !in_multi_cam {
                 let display_name = crate::dataset::camera_display_name(&ds.info.video_keys[0]);
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("Camera:").color(self.theme.muted));
