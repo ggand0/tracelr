@@ -441,6 +441,7 @@ impl GridView {
     }
 
     /// Rebuild all panes from `self.start_episode` using current cols/rows (multi-episode only).
+    /// Preserves `playing` state — callers that want to force playback should set it explicitly.
     fn rebuild(&mut self, ctx: &egui::Context, ds: &GridDataset) {
         self.panes.clear();
         self.selected_panes.clear();
@@ -466,7 +467,6 @@ impl GridView {
             }
         }
 
-        self.playing = true;
         self.last_frame_time = None;
     }
 

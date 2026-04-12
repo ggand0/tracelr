@@ -545,6 +545,7 @@ impl App {
         self.grid_cols = new_size;
         self.grid_rows = new_size;
 
+        let was_playing = self.grid_view.as_ref().map(|g| g.playing).unwrap_or(true);
         let is_multi_cam = self.grid_view.as_ref().map(|g| g.cam_count > 1).unwrap_or(false);
         if is_multi_cam {
             let start = self.grid_view.as_ref().map(|g| g.start_episode).unwrap_or(0);
@@ -553,6 +554,9 @@ impl App {
             if let Some(grid) = &mut self.grid_view {
                 grid.resize(new_size, new_size, ctx, &gds);
             }
+        }
+        if let Some(grid) = &mut self.grid_view {
+            grid.playing = was_playing;
         }
     }
 
