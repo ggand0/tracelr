@@ -284,10 +284,28 @@ impl App {
     }
 
     pub(crate) fn show_info_panel(&mut self, ui: &mut egui::Ui) {
-        let ds = match &self.dataset {
-            Some(ds) => ds,
-            None => return,
-        };
+        // Capture owned snapshots so later `&mut self` calls (e.g. show_camera_combobox)
+        // don't conflict with the dataset borrow.
+        let snapshot = self.dataset.as_ref().and_then(|ds| {
+            let ep = ds.episodes.get(self.current_episode)?;
+            let total_eps = ds.episodes.len();
+            let fps = ds.info.fps;
+            let cam_count = ds.info.video_keys.len();
+            let single_cam_name = if cam_count == 1 {
+                Some(crate::dataset::camera_display_name(&ds.info.video_keys[0]).to_string())
+            } else {
+                None
+            };
+            Some((
+                ep.episode_index,
+                total_eps,
+                ep.length,
+                fps,
+                cam_count,
+                single_cam_name,
+                ep.tasks.first().cloned(),
+            ))
+        });
 
         ui.label(
             egui::RichText::new("Episode Info")
@@ -296,20 +314,13 @@ impl App {
         );
         ui.separator();
 
-        if let Some(ep) = ds.episodes.get(self.current_episode) {
-            let info_rows: Vec<(&str, String)> = vec![
-                (
-                    "Episode:",
-                    format!("{} / {}", ep.episode_index, ds.episodes.len()),
-                ),
-                ("Frames:", format!("{}", ep.length)),
-                (
-                    "Duration:",
-                    format!("{:.1}s", ep.length as f64 / ds.info.fps as f64),
-                ),
-                ("FPS:", format!("{}", ds.info.fps)),
+        if let Some((ep_idx, total_eps, ep_length, fps, cam_count, single_cam_name, task)) = snapshot {
+            let info_rows: [(&str, String); 4] = [
+                ("Episode:", format!("{} / {}", ep_idx, total_eps)),
+                ("Frames:", format!("{}", ep_length)),
+                ("Duration:", format!("{:.1}s", ep_length as f64 / fps as f64)),
+                ("FPS:", format!("{}", fps)),
             ];
-
             for (label, value) in &info_rows {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(*label).color(self.theme.muted));
@@ -317,49 +328,20 @@ impl App {
                 });
             }
 
-            if ds.info.video_keys.len() > 1 {
-                let camera_names: Vec<(usize, String)> = ds
-                    .info
-                    .video_keys
-                    .iter()
-                    .enumerate()
-                    .map(|(i, k)| {
-                        (i, crate::dataset::camera_display_name(k).to_string())
-                    })
-                    .collect();
-                let current_display = camera_names
-                    .iter()
-                    .find(|(i, _)| *i == self.current_video_key_index)
-                    .map(|(_, name)| name.as_str())
-                    .unwrap_or("unknown");
+            let muted = self.theme.muted;
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Camera:").color(muted));
+                if cam_count > 1 {
+                    self.show_camera_combobox(ui, "camera_select", 100.0);
+                } else if let Some(name) = single_cam_name {
+                    ui.label(name);
+                }
+            });
 
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Camera:").color(self.theme.muted));
-                    let mut selected = self.current_video_key_index;
-                    egui::ComboBox::from_id_salt("camera_select")
-                        .selected_text(current_display)
-                        .width(100.0)
-                        .show_ui(ui, |ui| {
-                            for (idx, name) in &camera_names {
-                                ui.selectable_value(&mut selected, *idx, name);
-                            }
-                        });
-                    if selected != self.current_video_key_index {
-                        self.pending_camera_switch = Some(selected);
-                    }
-                });
-            } else if !ds.info.video_keys.is_empty() {
-                let display_name = crate::dataset::camera_display_name(&ds.info.video_keys[0]);
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Camera:").color(self.theme.muted));
-                    ui.label(display_name);
-                });
-            }
-
-            if !ep.tasks.is_empty() {
+            if let Some(task) = task {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("Task:").color(self.theme.muted));
-                    ui.label(&ep.tasks[0]);
+                    ui.label(task);
                 });
             }
         }
@@ -376,15 +358,53 @@ impl App {
         }
     }
 
+    /// Render a camera ComboBox that sets `pending_camera_switch` on change.
+    /// Used in both the single-video Episode Info panel and the single-cam grid
+    /// Cameras panel.
+    fn show_camera_combobox(&mut self, ui: &mut egui::Ui, id_salt: &str, width: f32) {
+        let ds = match &self.dataset {
+            Some(ds) => ds,
+            None => return,
+        };
+        if ds.info.video_keys.len() <= 1 {
+            return;
+        }
+        let camera_names: Vec<(usize, String)> = ds.info.video_keys.iter().enumerate()
+            .map(|(i, k)| (i, crate::dataset::camera_display_name(k).to_string()))
+            .collect();
+        let current_display = camera_names.iter()
+            .find(|(i, _)| *i == self.current_video_key_index)
+            .map(|(_, name)| name.as_str())
+            .unwrap_or("unknown");
+        let mut selected = self.current_video_key_index;
+        egui::ComboBox::from_id_salt(id_salt)
+            .selected_text(current_display)
+            .width(width)
+            .show_ui(ui, |ui| {
+                for (idx, name) in &camera_names {
+                    ui.selectable_value(&mut selected, *idx, name);
+                }
+            });
+        if selected != self.current_video_key_index {
+            self.pending_camera_switch = Some(selected);
+        }
+    }
+
     /// Grid-mode right panel: shows the camera selector (ComboBox in single-cam
     /// grid, checkboxes in multi-cam modes) and the trajectory view below it.
     /// No Episode Info section because it would be ambiguous when the grid shows
     /// multiple episodes.
     pub(crate) fn show_cameras_panel(&mut self, ui: &mut egui::Ui) {
-        let ds = match &self.dataset {
-            Some(ds) => ds,
-            None => return,
-        };
+        // Capture owned snapshot so later &mut self calls don't conflict
+        // with the dataset borrow.
+        let snapshot: Option<(Vec<String>, Option<String>)> = self.dataset.as_ref().map(|ds| {
+            let names: Vec<String> = ds.info.video_keys.iter()
+                .map(|k| crate::dataset::camera_display_name(k).to_string())
+                .collect();
+            let single = if names.len() == 1 { Some(names[0].clone()) } else { None };
+            (names, single)
+        });
+        let Some((cam_names, single_cam_name)) = snapshot else { return };
 
         ui.label(
             egui::RichText::new("Cameras")
@@ -394,11 +414,10 @@ impl App {
         ui.separator();
 
         let in_multi_cam = self.is_camera_grid();
-        if in_multi_cam && ds.info.video_keys.len() > 1 {
+        if in_multi_cam && cam_names.len() > 1 {
             // Multi-cam mode: checkboxes
             let mut changed = false;
-            for (i, key) in ds.info.video_keys.iter().enumerate() {
-                let display = crate::dataset::camera_display_name(key);
+            for (i, display) in cam_names.iter().enumerate() {
                 let mut checked = self.selected_cameras.get(i).copied().unwrap_or(true);
                 if ui.checkbox(&mut checked, display).changed() {
                     let other_selected = self.selected_cameras.iter().enumerate()
@@ -414,36 +433,10 @@ impl App {
             if changed {
                 self.pending_multi_camera_rebuild = true;
             }
-        } else if ds.info.video_keys.len() > 1 {
-            // Single-cam grid: ComboBox
-            let camera_names: Vec<(usize, String)> = ds
-                .info
-                .video_keys
-                .iter()
-                .enumerate()
-                .map(|(i, k)| (i, crate::dataset::camera_display_name(k).to_string()))
-                .collect();
-            let current_display = camera_names
-                .iter()
-                .find(|(i, _)| *i == self.current_video_key_index)
-                .map(|(_, name)| name.as_str())
-                .unwrap_or("unknown");
-            let mut selected = self.current_video_key_index;
-            egui::ComboBox::from_id_salt("camera_select_grid")
-                .selected_text(current_display)
-                .width(140.0)
-                .show_ui(ui, |ui| {
-                    for (idx, name) in &camera_names {
-                        ui.selectable_value(&mut selected, *idx, name);
-                    }
-                });
-            if selected != self.current_video_key_index {
-                self.pending_camera_switch = Some(selected);
-            }
-        } else if !ds.info.video_keys.is_empty() {
-            // Single-camera dataset: just show the name
-            let display_name = crate::dataset::camera_display_name(&ds.info.video_keys[0]);
-            ui.label(display_name);
+        } else if cam_names.len() > 1 {
+            self.show_camera_combobox(ui, "camera_select_grid", 140.0);
+        } else if let Some(name) = single_cam_name {
+            ui.label(name);
         }
 
         // Trajectory view below the cameras section

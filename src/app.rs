@@ -405,7 +405,6 @@ impl eframe::App for App {
         self.show_menu_bar(ctx);
 
         let in_grid = self.grid_view.is_some();
-        let is_multi_camera = self.is_camera_grid();
 
         // Left panel: episode list (always visible)
         egui::SidePanel::left("episode_list")
@@ -433,7 +432,6 @@ impl eframe::App for App {
                     self.show_cameras_panel(ui);
                 });
         }
-        let _ = is_multi_camera;
 
         if !in_grid {
             // Single-video mode: footer + slider
