@@ -317,9 +317,7 @@ impl App {
                 });
             }
 
-            // Show ComboBox only in single-camera mode; multi-cam modes use checkboxes
-            let in_multi_cam = self.is_camera_grid();
-            if ds.info.video_keys.len() > 1 && !in_multi_cam {
+            if ds.info.video_keys.len() > 1 {
                 let camera_names: Vec<(usize, String)> = ds
                     .info
                     .video_keys
@@ -350,7 +348,7 @@ impl App {
                         self.pending_camera_switch = Some(selected);
                     }
                 });
-            } else if !ds.info.video_keys.is_empty() && !in_multi_cam {
+            } else if !ds.info.video_keys.is_empty() {
                 let display_name = crate::dataset::camera_display_name(&ds.info.video_keys[0]);
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("Camera:").color(self.theme.muted));
@@ -364,37 +362,6 @@ impl App {
                     ui.label(&ep.tasks[0]);
                 });
             }
-
-            // Camera checkboxes for multi-camera mode
-            let is_multi_camera = self.is_camera_grid();
-            if ds.info.video_keys.len() > 1 && is_multi_camera {
-                ui.add_space(8.0);
-                ui.label(
-                    egui::RichText::new("Cameras")
-                        .strong()
-                        .color(self.theme.heading),
-                );
-                ui.separator();
-                let mut changed = false;
-                for (i, key) in ds.info.video_keys.iter().enumerate() {
-                    let display = crate::dataset::camera_display_name(key);
-                    let mut checked = self.selected_cameras.get(i).copied().unwrap_or(true);
-                    if ui.checkbox(&mut checked, display).changed() {
-                        // Ensure at least one camera stays selected
-                        let other_selected = self.selected_cameras.iter().enumerate()
-                            .any(|(j, &v)| j != i && v);
-                        if checked || other_selected {
-                            if let Some(slot) = self.selected_cameras.get_mut(i) {
-                                *slot = checked;
-                            }
-                            changed = true;
-                        }
-                    }
-                }
-                if changed {
-                    self.pending_multi_camera_rebuild = true;
-                }
-            }
         }
 
         if self.annotate_mode {
@@ -403,6 +370,83 @@ impl App {
         }
 
         // Trajectory view in single-view mode
+        if self.show_trajectory && self.robot_kinematics.is_some() {
+            ui.add_space(16.0);
+            self.show_trajectory_panel(ui);
+        }
+    }
+
+    /// Grid-mode right panel: shows the camera selector (ComboBox in single-cam
+    /// grid, checkboxes in multi-cam modes) and the trajectory view below it.
+    /// No Episode Info section because it would be ambiguous when the grid shows
+    /// multiple episodes.
+    pub(crate) fn show_cameras_panel(&mut self, ui: &mut egui::Ui) {
+        let ds = match &self.dataset {
+            Some(ds) => ds,
+            None => return,
+        };
+
+        ui.label(
+            egui::RichText::new("Cameras")
+                .strong()
+                .color(self.theme.heading),
+        );
+        ui.separator();
+
+        let in_multi_cam = self.is_camera_grid();
+        if in_multi_cam && ds.info.video_keys.len() > 1 {
+            // Multi-cam mode: checkboxes
+            let mut changed = false;
+            for (i, key) in ds.info.video_keys.iter().enumerate() {
+                let display = crate::dataset::camera_display_name(key);
+                let mut checked = self.selected_cameras.get(i).copied().unwrap_or(true);
+                if ui.checkbox(&mut checked, display).changed() {
+                    let other_selected = self.selected_cameras.iter().enumerate()
+                        .any(|(j, &v)| j != i && v);
+                    if checked || other_selected {
+                        if let Some(slot) = self.selected_cameras.get_mut(i) {
+                            *slot = checked;
+                        }
+                        changed = true;
+                    }
+                }
+            }
+            if changed {
+                self.pending_multi_camera_rebuild = true;
+            }
+        } else if ds.info.video_keys.len() > 1 {
+            // Single-cam grid: ComboBox
+            let camera_names: Vec<(usize, String)> = ds
+                .info
+                .video_keys
+                .iter()
+                .enumerate()
+                .map(|(i, k)| (i, crate::dataset::camera_display_name(k).to_string()))
+                .collect();
+            let current_display = camera_names
+                .iter()
+                .find(|(i, _)| *i == self.current_video_key_index)
+                .map(|(_, name)| name.as_str())
+                .unwrap_or("unknown");
+            let mut selected = self.current_video_key_index;
+            egui::ComboBox::from_id_salt("camera_select_grid")
+                .selected_text(current_display)
+                .width(140.0)
+                .show_ui(ui, |ui| {
+                    for (idx, name) in &camera_names {
+                        ui.selectable_value(&mut selected, *idx, name);
+                    }
+                });
+            if selected != self.current_video_key_index {
+                self.pending_camera_switch = Some(selected);
+            }
+        } else if !ds.info.video_keys.is_empty() {
+            // Single-camera dataset: just show the name
+            let display_name = crate::dataset::camera_display_name(&ds.info.video_keys[0]);
+            ui.label(display_name);
+        }
+
+        // Trajectory view below the cameras section
         if self.show_trajectory && self.robot_kinematics.is_some() {
             ui.add_space(16.0);
             self.show_trajectory_panel(ui);

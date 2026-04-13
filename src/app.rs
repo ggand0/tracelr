@@ -415,15 +415,25 @@ impl eframe::App for App {
                 self.show_episode_list(ctx, ui);
             });
 
-        // Right info panel: shown in single-video mode and multi-camera grid mode
-        if !in_grid || is_multi_camera {
+        // Right side panel:
+        // - Single-video mode: Episode Info panel (with camera ComboBox, trajectory, etc.)
+        // - Any grid mode: Cameras panel (camera widget + trajectory), no Episode Info
+        if !in_grid {
             egui::SidePanel::right("info_panel")
                 .default_width(200.0)
                 .min_width(160.0)
                 .show(ctx, |ui| {
                     self.show_info_panel(ui);
                 });
+        } else {
+            egui::SidePanel::right("cameras_panel")
+                .default_width(280.0)
+                .min_width(200.0)
+                .show(ctx, |ui| {
+                    self.show_cameras_panel(ui);
+                });
         }
+        let _ = is_multi_camera;
 
         if !in_grid {
             // Single-video mode: footer + slider
@@ -447,17 +457,7 @@ impl eframe::App for App {
                     }
                 });
         } else {
-            // Grid mode: trajectory panel + footer + slider
-            // Skip standalone trajectory in multi-camera mode (it's in the info panel)
-            if !is_multi_camera && self.show_trajectory && self.robot_kinematics.is_some() {
-                egui::SidePanel::right("trajectory_panel")
-                    .default_width(280.0)
-                    .min_width(200.0)
-                    .show(ctx, |ui| {
-                        self.show_trajectory_panel(ui);
-                    });
-            }
-
+            // Grid mode: footer + slider (trajectory is inside the cameras panel)
             egui::TopBottomPanel::bottom("grid_footer")
                 .exact_height(22.0)
                 .show(ctx, |ui| {
