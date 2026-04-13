@@ -102,17 +102,46 @@ RUST_LOG=tracelr=debug cargo run --profile opt-dev -- /path/to/dataset/
 
 | Key | Action |
 |-----|--------|
-| `Left` / `Right` | Previous / next episode |
+| `Left` / `Right` | Previous / next episode (or page grid) |
 | `Shift+Left/Right` | Skate (continuous advance while held) |
 | `Home` / `End` | First / last episode |
 | `Space` | Play / pause video |
-| `Escape` | Exit video mode (show thumbnail) |
 | `Enter` | Re-enter video mode |
-| `1`-`9` | Assign prompt to current episode (annotation mode) |
-| `G` | Toggle grid view |
+| `Escape` | Reset to the initial single view (default camera, all checkboxes re-checked, current episode preserved) |
+| `G` | Toggle the episode-grid dimension (single video ↔ multi-episode grid) |
+| `M` | Toggle the camera dimension. From single video: enter multi-camera grid (one episode, all cameras). From multi-episode grid: enter Subgrid (cameras nested inside each episode cell). From multi-camera grid: exit to single video. |
+| `N` | Toggle the Tiled camera layout (each camera is a flat pane, cols snap to a multiple of camera count). Works from single video, episode grid, and multi-camera grid. |
+| `C` / `Shift+C` | Cycle the active single camera (single video mode and single-camera grid) |
 | `T` | Toggle trajectory panel |
 | `+` / `-` | Resize grid (in grid mode) |
+| `1`-`9` | Assign prompt to current episode (annotation mode) |
 | `Ctrl+S` | Save annotations (annotation mode) |
+
+`G`, `M`, and `N` are composable: `M` adds or removes the camera dimension,
+`G` adds or removes the episode dimension, and `N` toggles the Tiled layout
+on the current view. For example, pressing `M` then `G` from single video
+lands you in Subgrid (multi-episode, multi-camera). `Escape` always returns
+to the initial single-video view if you are lost in a state combination.
+
+### Multi-camera view
+
+Datasets with multiple cameras (wrist, top, side, etc.) can be viewed in
+several layouts:
+
+- **Single camera, single episode** (default): one video player
+- **Single camera, multi-episode grid** (`G`): the episode grid, one camera
+  across all panes. Use `C` to cycle cameras, or the camera dropdown in the
+  right-side Cameras panel
+- **Multi-camera single-episode** (`M` from single video): all cameras for
+  one episode in an auto-sized grid
+- **Subgrid** (`M` from grid, or `G` from multi-camera): each episode cell
+  shows all cameras as mini-frames inside it, preserving your grid layout
+- **Tiled** (`N` from grid, or `N` from single video): each camera gets its
+  own flat pane. Cols snap to a multiple of the camera count. Use the
+  **Tiled View Rows** slider in the View menu to adjust rows.
+
+In multi-camera views, the right-side Cameras panel shows checkboxes to
+enable or disable individual cameras.
 
 ### EE trajectory visualization
 

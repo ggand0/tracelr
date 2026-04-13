@@ -328,15 +328,17 @@ impl App {
                 });
             }
 
-            let muted = self.theme.muted;
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Camera:").color(muted));
-                if cam_count > 1 {
-                    self.show_camera_combobox(ui, "camera_select", 100.0);
-                } else if let Some(name) = single_cam_name {
-                    ui.label(name);
-                }
-            });
+            if cam_count > 0 {
+                let muted = self.theme.muted;
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Camera:").color(muted));
+                    if cam_count > 1 {
+                        self.show_camera_combobox(ui, "camera_select", 100.0);
+                    } else if let Some(name) = single_cam_name {
+                        ui.label(name);
+                    }
+                });
+            }
 
             if let Some(task) = task {
                 ui.horizontal(|ui| {
