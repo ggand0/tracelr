@@ -72,7 +72,7 @@ impl App {
                     }
                     ui.separator();
 
-                    // Grid size picker — controls the episode grid (SingleCamera / Subgrid)
+                    // Grid size picker: controls the episode grid (SingleCamera / Subgrid)
                     ui.label(
                         egui::RichText::new("Grid Size")
                             .color(self.theme.muted)
@@ -93,7 +93,7 @@ impl App {
                         }
                     }
 
-                    // Matrix rows slider — always visible when multi-cam is available.
+                    // Matrix rows slider: always visible when multi-cam is available.
                     // Interacting enters Tiled mode directly.
                     if has_multi_cam {
                         ui.separator();
