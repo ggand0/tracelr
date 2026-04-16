@@ -17,6 +17,7 @@ macro_rules! grid_dataset {
     };
 }
 
+mod about;
 mod annotation;
 mod app;
 mod build_info;

@@ -117,6 +117,8 @@ pub struct App {
     pub(crate) show_cache_overlay: bool,
     /// Whether the keyboard shortcut bar is visible below the menu bar.
     pub(crate) show_shortcut_bar: bool,
+    /// Whether the About modal is visible.
+    pub(crate) show_about: bool,
 }
 
 impl App {
@@ -169,6 +171,7 @@ impl App {
             initial_size_set: false,
             show_cache_overlay: false,
             show_shortcut_bar: false,
+            show_about: false,
         };
 
         if let Some(path) = initial_path {
@@ -516,5 +519,8 @@ impl eframe::App for App {
                 cache.show_debug_overlay(ctx, self.current_episode, self.video_paths.len());
             }
         }
+
+        // About modal (rendered last so it sits on top)
+        crate::about::show_about_modal(ctx, &mut self.show_about, &self.theme);
     }
 }

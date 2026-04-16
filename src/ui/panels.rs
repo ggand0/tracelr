@@ -142,7 +142,8 @@ impl App {
                         self.show_shortcut_bar = !self.show_shortcut_bar;
                         ui.close_menu();
                     }
-                    if ui.add_enabled(false, egui::Button::new("About...")).clicked() {
+                    if ui.button("About...").clicked() {
+                        self.show_about = true;
                         ui.close_menu();
                     }
                 });
@@ -174,12 +175,17 @@ impl App {
                     .unwrap_or(false);
                 let has_traj = self.robot_kinematics.is_some();
                 let is_tiled = in_grid && self.grid_view.as_ref()
-                    .map(|g| g.cam_count > 1).unwrap_or(false);
+                    .map(|g| g.cam_count > 1 && !g.subgrid).unwrap_or(false);
+                let is_subgrid = in_grid && self.grid_view.as_ref()
+                    .map(|g| g.subgrid).unwrap_or(false);
 
                 let hints: Vec<&str> = if !in_grid {
                     // Single video mode
                     let mut h = vec!["[G] grid", "[Space] play/pause", "[A/D] episode"];
-                    if has_multi_cam { h.push("[C] camera"); }
+                    if has_multi_cam {
+                        h.push("[M] multi-cam");
+                        h.push("[C] camera");
+                    }
                     if has_traj { h.push("[T] trajectory"); }
                     h.push("[Enter] video mode");
                     h
@@ -189,15 +195,25 @@ impl App {
                             vec!["[M] exit", "[Space] play/pause", "[Esc] reset"]
                         }
                         Some(crate::grid::GridMode::MultiEpisode) if is_tiled => {
-                            let mut h = vec!["[G] exit", "[N] untile", "[+/-] resize", "[A/D] page"];
-                            h.push("[L] labels");
-                            h.push("[Esc] reset");
+                            let mut h = vec!["[G] exit"];
+                            if has_multi_cam { h.push("[M] subgrid"); }
+                            h.extend_from_slice(&["[N] untile", "[+/-] resize", "[A/D] page", "[L] labels", "[Esc] reset"]);
+                            h
+                        }
+                        Some(crate::grid::GridMode::MultiEpisode) if is_subgrid => {
+                            let mut h = vec!["[G] exit"];
+                            if has_multi_cam {
+                                h.push("[M] single-cam");
+                                h.push("[N] tiled");
+                            }
+                            h.extend_from_slice(&["[+/-] resize", "[A/D] page", "[L] labels", "[Esc] reset"]);
                             h
                         }
                         _ => {
+                            // Flat single-cam grid
                             let mut h = vec!["[G] exit"];
                             if has_multi_cam {
-                                h.push("[M] multi-cam");
+                                h.push("[M] subgrid");
                                 h.push("[N] tiled");
                                 h.push("[C] camera");
                             }
