@@ -81,7 +81,7 @@ pub fn show_about_modal(ctx: &egui::Context, show: &mut bool, theme: &UiTheme) {
                         ui.add_space(4.0);
 
                         ui.label(egui::RichText::new("Learn more at:").size(15.0));
-                        let link_text = "https://github.com/ggand0/lerobot-explorer";
+                        let link_text = "https://github.com/ggand0/tracelr";
                         if ui
                             .add(
                                 egui::Label::new(

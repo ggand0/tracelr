@@ -192,7 +192,7 @@ impl App {
                 } else {
                     match self.grid_view.as_ref().map(|g| g.mode) {
                         Some(crate::grid::GridMode::MultiCamera) => {
-                            vec!["[M] exit", "[Space] play/pause", "[Esc] reset"]
+                            vec!["[G] exit", "[M] exit", "[Space] play/pause", "[Esc] reset"]
                         }
                         Some(crate::grid::GridMode::MultiEpisode) if is_tiled => {
                             let mut h = vec!["[G] exit"];
