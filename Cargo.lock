@@ -3916,6 +3916,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "urdf-rs 0.8.0",
+ "webbrowser",
 ]
 
 [[package]]
