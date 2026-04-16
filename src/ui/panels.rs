@@ -899,10 +899,9 @@ impl App {
     }
 
     pub(crate) fn show_grid_display(&mut self, ui: &mut egui::Ui) {
-        let muted = self.theme.muted;
         let accent = self.theme.accent;
         if let Some(grid) = &mut self.grid_view {
-            grid.show(ui, muted, accent, self.label_mode);
+            grid.show(ui, accent, self.label_mode);
         }
     }
 

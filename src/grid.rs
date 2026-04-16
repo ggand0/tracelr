@@ -536,16 +536,16 @@ impl GridView {
     }
 
     /// Render the grid into the given UI area.
-    pub fn show(&mut self, ui: &mut egui::Ui, theme_muted: egui::Color32, theme_accent: egui::Color32, label_mode: crate::app::LabelMode) {
+    pub fn show(&mut self, ui: &mut egui::Ui, theme_accent: egui::Color32, label_mode: crate::app::LabelMode) {
         if self.subgrid {
-            self.show_subgrid(ui, theme_muted, theme_accent, label_mode);
+            self.show_subgrid(ui, theme_accent, label_mode);
         } else {
-            self.show_flat(ui, theme_muted, theme_accent, label_mode);
+            self.show_flat(ui, theme_accent, label_mode);
         }
     }
 
     /// Flat rendering: each pane is its own cell in the grid.
-    fn show_flat(&mut self, ui: &mut egui::Ui, theme_muted: egui::Color32, theme_accent: egui::Color32, label_mode: crate::app::LabelMode) {
+    fn show_flat(&mut self, ui: &mut egui::Ui, theme_accent: egui::Color32, label_mode: crate::app::LabelMode) {
         let available = ui.available_size();
         let cols = self.cols;
         let rows = self.rows;
@@ -580,7 +580,7 @@ impl GridView {
 
             Self::draw_pane_frame(ui, pane, rect, pane_w, pane_h);
 
-            Self::draw_pane_label(ui, pane, rect, is_selected, label_mode, theme_accent, theme_muted);
+            Self::draw_pane_label(ui, pane, rect, is_selected, label_mode, theme_accent);
 
             // Per-pane border only in single-camera mode
             if is_selected && cam_count <= 1 {
@@ -622,7 +622,7 @@ impl GridView {
     }
 
     /// Subgrid rendering: each episode cell contains cam_count sub-panes.
-    fn show_subgrid(&mut self, ui: &mut egui::Ui, theme_muted: egui::Color32, theme_accent: egui::Color32, label_mode: crate::app::LabelMode) {
+    fn show_subgrid(&mut self, ui: &mut egui::Ui, theme_accent: egui::Color32, label_mode: crate::app::LabelMode) {
         let available = ui.available_size();
         let cols = self.cols;
         let rows = self.rows;
@@ -689,7 +689,7 @@ impl GridView {
 
             // Episode label for the cell
             let first_pane = &self.panes[first_pane_idx];
-            Self::draw_pane_label(ui, first_pane, cell_rect, is_selected, label_mode, theme_accent, theme_muted);
+            Self::draw_pane_label(ui, first_pane, cell_rect, is_selected, label_mode, theme_accent);
 
             // Cell boundary: subtle border always visible to separate episodes
             let stroke = if is_selected {
@@ -758,7 +758,6 @@ impl GridView {
         is_selected: bool,
         label_mode: crate::app::LabelMode,
         theme_accent: egui::Color32,
-        _theme_muted: egui::Color32,
     ) {
         let badge_bg = egui::Color32::from_black_alpha(160);
         let badge_fg = egui::Color32::from_gray(230);
