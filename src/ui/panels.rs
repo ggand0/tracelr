@@ -806,7 +806,7 @@ impl App {
         let muted = self.theme.muted;
         let accent = self.theme.accent;
         if let Some(grid) = &mut self.grid_view {
-            grid.show(ui, muted, accent);
+            grid.show(ui, muted, accent, self.label_mode);
         }
     }
 

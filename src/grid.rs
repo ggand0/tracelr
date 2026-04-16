@@ -536,25 +536,28 @@ impl GridView {
     }
 
     /// Render the grid into the given UI area.
-    pub fn show(&mut self, ui: &mut egui::Ui, theme_muted: egui::Color32, theme_accent: egui::Color32) {
+    pub fn show(&mut self, ui: &mut egui::Ui, theme_muted: egui::Color32, theme_accent: egui::Color32, label_mode: crate::app::LabelMode) {
         if self.subgrid {
-            self.show_subgrid(ui, theme_muted, theme_accent);
+            self.show_subgrid(ui, theme_muted, theme_accent, label_mode);
         } else {
-            self.show_flat(ui, theme_muted, theme_accent);
+            self.show_flat(ui, theme_muted, theme_accent, label_mode);
         }
     }
 
     /// Flat rendering: each pane is its own cell in the grid.
-    fn show_flat(&mut self, ui: &mut egui::Ui, theme_muted: egui::Color32, theme_accent: egui::Color32) {
+    fn show_flat(&mut self, ui: &mut egui::Ui, theme_muted: egui::Color32, theme_accent: egui::Color32, label_mode: crate::app::LabelMode) {
         let available = ui.available_size();
         let cols = self.cols;
         let rows = self.rows;
+        let cam_count = self.cam_count;
 
         let pane_w = (available.x - PANE_SPACING * (cols as f32 - 1.0)) / cols as f32;
         let pane_h = (available.y - PANE_SPACING * (rows as f32 - 1.0)) / rows as f32;
 
         let origin = ui.cursor().min;
         let mut clicked_episode: Option<usize> = None;
+        // Collect rects for grouped selection border (tiled multi-cam)
+        let mut pane_rects: Vec<egui::Rect> = Vec::with_capacity(self.panes.len());
 
         for (idx, pane) in self.panes.iter().enumerate() {
             let col = idx % cols;
@@ -563,6 +566,7 @@ impl GridView {
             let x = origin.x + col as f32 * (pane_w + PANE_SPACING);
             let y = origin.y + row as f32 * (pane_h + PANE_SPACING);
             let rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(pane_w, pane_h));
+            pane_rects.push(rect);
 
             let response = ui.allocate_rect(rect, egui::Sense::click());
 
@@ -576,17 +580,39 @@ impl GridView {
 
             Self::draw_pane_frame(ui, pane, rect, pane_w, pane_h);
 
-            let ep_frame = pane.current_frame.saturating_sub(pane.episode_start_frame);
-            let label = format!("{}  {}/{}", pane.label, ep_frame + 1, pane.total_frames);
-            let label_pos = egui::pos2(rect.min.x + PANE_SPACING, rect.max.y - PANE_LABEL_HEIGHT + 2.0);
-            ui.painter().text(
-                label_pos, egui::Align2::LEFT_TOP, &label,
-                egui::FontId::monospace(PANE_LABEL_FONT_SIZE),
-                if is_selected { theme_accent } else { theme_muted },
-            );
+            Self::draw_pane_label(ui, pane, rect, is_selected, label_mode, theme_accent, theme_muted);
 
-            if is_selected {
+            // Per-pane border only in single-camera mode
+            if is_selected && cam_count <= 1 {
                 ui.painter().rect_stroke(rect, PANE_BORDER_RADIUS, egui::Stroke::new(PANE_BORDER_WIDTH, theme_accent), egui::StrokeKind::Outside);
+            }
+        }
+
+        // Grouped selection border: one border per episode spanning all its camera panes
+        if cam_count > 1 {
+            let mut drawn_episodes: HashSet<usize> = HashSet::new();
+            for &idx in &self.selected_panes {
+                let ep = match self.panes.get(idx) {
+                    Some(p) => p.episode_index,
+                    None => continue,
+                };
+                if !drawn_episodes.insert(ep) {
+                    continue;
+                }
+                // Find bounding rect of all panes for this episode
+                let mut group_rect: Option<egui::Rect> = None;
+                for (i, pane) in self.panes.iter().enumerate() {
+                    if pane.episode_index == ep {
+                        let r = pane_rects[i];
+                        group_rect = Some(match group_rect {
+                            Some(acc) => acc.union(r),
+                            None => r,
+                        });
+                    }
+                }
+                if let Some(r) = group_rect {
+                    ui.painter().rect_stroke(r, PANE_BORDER_RADIUS, egui::Stroke::new(PANE_BORDER_WIDTH, theme_accent), egui::StrokeKind::Outside);
+                }
             }
         }
 
@@ -596,7 +622,7 @@ impl GridView {
     }
 
     /// Subgrid rendering: each episode cell contains cam_count sub-panes.
-    fn show_subgrid(&mut self, ui: &mut egui::Ui, theme_muted: egui::Color32, theme_accent: egui::Color32) {
+    fn show_subgrid(&mut self, ui: &mut egui::Ui, theme_muted: egui::Color32, theme_accent: egui::Color32, label_mode: crate::app::LabelMode) {
         let available = ui.available_size();
         let cols = self.cols;
         let rows = self.rows;
@@ -639,8 +665,9 @@ impl GridView {
             let bg = if is_selected { egui::Color32::from_gray(50) } else { egui::Color32::from_gray(30) };
             ui.painter().rect_filled(cell_rect, PANE_BORDER_RADIUS, bg);
 
-            // Sub-pane area (above label)
-            let content_h = cell_h - PANE_LABEL_HEIGHT;
+            // Sub-pane area (reserve bottom space only for verbose labels)
+            let label_reserve = if label_mode == crate::app::LabelMode::Verbose { PANE_LABEL_HEIGHT } else { 0.0 };
+            let content_h = cell_h - label_reserve;
             let sub_w = (cell_w - sub_spacing * (sub_cols as f32 - 1.0)) / sub_cols as f32;
             let sub_h = (content_h - sub_spacing * (sub_rows as f32 - 1.0)) / sub_rows as f32;
 
@@ -660,16 +687,9 @@ impl GridView {
                 Self::draw_pane_frame(ui, pane, sub_rect, sub_w, sub_h);
             }
 
-            // Episode label at bottom of cell
+            // Episode label for the cell
             let first_pane = &self.panes[first_pane_idx];
-            let ep_frame = first_pane.current_frame.saturating_sub(first_pane.episode_start_frame);
-            let label = format!("ep {:03}  {}/{}", first_pane.episode_index, ep_frame + 1, first_pane.total_frames);
-            let label_pos = egui::pos2(cell_rect.min.x + PANE_SPACING, cell_rect.max.y - PANE_LABEL_HEIGHT + 2.0);
-            ui.painter().text(
-                label_pos, egui::Align2::LEFT_TOP, &label,
-                egui::FontId::monospace(PANE_LABEL_FONT_SIZE),
-                if is_selected { theme_accent } else { theme_muted },
-            );
+            Self::draw_pane_label(ui, first_pane, cell_rect, is_selected, label_mode, theme_accent, theme_muted);
 
             // Cell boundary: subtle border always visible to separate episodes
             let stroke = if is_selected {
@@ -727,6 +747,60 @@ impl GridView {
                 egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                 egui::Color32::WHITE,
             );
+        }
+    }
+
+    /// Draw a label on a pane or cell according to the current label mode.
+    fn draw_pane_label(
+        ui: &egui::Ui,
+        pane: &GridPane,
+        rect: egui::Rect,
+        is_selected: bool,
+        label_mode: crate::app::LabelMode,
+        theme_accent: egui::Color32,
+        _theme_muted: egui::Color32,
+    ) {
+        let badge_bg = egui::Color32::from_black_alpha(160);
+        let badge_fg = egui::Color32::from_gray(230);
+        let font = egui::FontId::monospace(PANE_LABEL_FONT_SIZE);
+        let pad = 3.0_f32;
+
+        match label_mode {
+            crate::app::LabelMode::Compact => {
+                let text = format!("ep {:03}", pane.episode_index);
+                let galley = ui.painter().layout_no_wrap(text, font, badge_fg);
+                let text_size = galley.size();
+                let bg_rect = egui::Rect::from_min_size(
+                    egui::pos2(rect.min.x, rect.min.y),
+                    egui::vec2(text_size.x + pad * 2.0, text_size.y + pad * 2.0),
+                );
+                ui.painter().rect_filled(bg_rect, PANE_BORDER_RADIUS, badge_bg);
+                ui.painter().galley(
+                    egui::pos2(rect.min.x + pad, rect.min.y + pad),
+                    galley,
+                    badge_fg,
+                );
+            }
+            crate::app::LabelMode::Verbose => {
+                let ep_frame = pane.current_frame.saturating_sub(pane.episode_start_frame);
+                let text = format!("{}  {}/{}", pane.label, ep_frame + 1, pane.total_frames);
+                let text_color = if is_selected { theme_accent } else { badge_fg };
+                let galley = ui.painter().layout_no_wrap(text, font, text_color);
+                let text_size = galley.size();
+                let label_x = rect.min.x + PANE_SPACING;
+                let label_y = rect.max.y - PANE_LABEL_HEIGHT + 2.0;
+                let bg_rect = egui::Rect::from_min_size(
+                    egui::pos2(label_x - pad, label_y - pad),
+                    egui::vec2(text_size.x + pad * 2.0, text_size.y + pad * 2.0),
+                );
+                ui.painter().rect_filled(bg_rect, PANE_BORDER_RADIUS, badge_bg);
+                ui.painter().galley(
+                    egui::pos2(label_x, label_y),
+                    galley,
+                    text_color,
+                );
+            }
+            crate::app::LabelMode::Hidden => {}
         }
     }
 
