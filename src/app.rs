@@ -15,6 +15,18 @@ use crate::trajectory_view::OrbitCamera;
 const CACHE_COUNT: usize = 5; // ±5 episodes = 11 total slots
 const LRU_CAPACITY: usize = 50;
 
+/// How cameras are shown in the multi-episode grid.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CameraDisplay {
+    /// One camera per pane (default).
+    SingleCamera,
+    /// Each episode's cameras get their own flat panes, tiled into the grid.
+    Tiled,
+    /// Each episode pane renders all cameras as a subgrid inside it.
+    Subgrid,
+}
+
+
 pub struct App {
     // Data
     pub(crate) dataset: Option<LeRobotDataset>,
@@ -49,6 +61,10 @@ pub struct App {
     pub(crate) grid_view: Option<GridView>,
     pub(crate) grid_cols: usize,
     pub(crate) grid_rows: usize,
+    /// Which cameras are selected for multi-camera mode (one bool per video_key).
+    pub(crate) selected_cameras: Vec<bool>,
+    /// How cameras are displayed in multi-episode grid mode.
+    pub(crate) camera_display: CameraDisplay,
 
     /// Set to true when navigation changes the selected episode(s),
     /// consumed after one frame to auto-scroll the episode list.
@@ -66,6 +82,10 @@ pub struct App {
 
     // Mode
     pub(crate) annotate_mode: bool,
+
+    // Pending actions from UI panels (applied in update loop where ctx is available)
+    pub(crate) pending_camera_switch: Option<usize>,
+    pub(crate) pending_multi_camera_rebuild: bool,
 
     // UI
     pub(crate) theme: UiTheme,
@@ -106,6 +126,8 @@ impl App {
             grid_view: None,
             grid_cols: 2,
             grid_rows: 2,
+            selected_cameras: Vec::new(),
+            camera_display: CameraDisplay::SingleCamera,
             scroll_to_selected: false,
             robot_kinematics: None,
             trajectory_cache: TrajectoryCache::new(100),
@@ -113,6 +135,8 @@ impl App {
             show_trajectory: true,
             state_pos_indices: Vec::new(),
             urdf_override,
+            pending_camera_switch: None,
+            pending_multi_camera_rebuild: false,
             annotate_mode: annotate,
             theme: UiTheme::teal_dark(),
             perf: PerfTracker::new(),
@@ -143,21 +167,6 @@ impl App {
                     .unwrap_or(0);
                 self.current_video_key_index = wrist_idx;
 
-                let video_key = ds.info.video_keys.get(wrist_idx).cloned().unwrap_or_default();
-                self.video_paths = ds
-                    .episodes
-                    .iter()
-                    .map(|ep| ds.video_path(ep.episode_index, &video_key))
-                    .collect();
-                self.seek_ranges = ds
-                    .episodes
-                    .iter()
-                    .map(|ep| {
-                        let (from, to) = ds.episode_time_range(ep.episode_index, &video_key);
-                        if to > from { Some((from, to)) } else { None }
-                    })
-                    .collect();
-
                 // Try to load robot kinematics for EE trajectory visualization
                 self.robot_kinematics = None;
                 self.trajectory_cache = TrajectoryCache::new(100);
@@ -184,7 +193,11 @@ impl App {
                     log::info!("No URDF found for trajectory visualization");
                 }
 
+                self.selected_cameras = vec![true; ds.info.video_keys.len()];
+                self.camera_display = CameraDisplay::SingleCamera;
+                self.grid_view = None;
                 self.dataset = Some(ds);
+                self.rebuild_video_paths();
                 self.current_episode = 0;
                 self.current_texture = None;
                 self.loading_error = None;
@@ -241,6 +254,46 @@ impl App {
             "tracelr".to_string()
         };
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+    }
+
+    /// Rebuild `video_paths` and `seek_ranges` for the current `current_video_key_index`.
+    /// Call this after changing the camera selection.
+    pub(crate) fn rebuild_video_paths(&mut self) {
+        let ds = match &self.dataset {
+            Some(ds) => ds,
+            None => return,
+        };
+        let video_key = ds
+            .info
+            .video_keys
+            .get(self.current_video_key_index)
+            .cloned()
+            .unwrap_or_default();
+        self.video_paths = ds
+            .episodes
+            .iter()
+            .map(|ep| ds.video_path(ep.episode_index, &video_key))
+            .collect();
+        self.seek_ranges = ds
+            .episodes
+            .iter()
+            .map(|ep| {
+                let (from, to) = ds.episode_time_range(ep.episode_index, &video_key);
+                if to > from { Some((from, to)) } else { None }
+            })
+            .collect();
+    }
+
+    /// Whether the grid is in a multi-camera mode (MultiCamera grid, or MultiEpisode
+    /// with Tiled/Subgrid camera_display). Remains true even when only 1 camera is
+    /// selected, so the info panel keeps showing the camera checkboxes.
+    pub(crate) fn is_camera_grid(&self) -> bool {
+        self.grid_view.as_ref()
+            .map(|g| {
+                g.mode == crate::grid::GridMode::MultiCamera
+                    || self.camera_display != CameraDisplay::SingleCamera
+            })
+            .unwrap_or(false)
     }
 
     pub(crate) fn episode_seek_range(&self) -> Option<(f64, f64)> {
@@ -314,6 +367,38 @@ impl eframe::App for App {
 
         self.handle_dropped_files(ctx);
         self.handle_keyboard(ctx);
+
+        // Apply deferred actions (requested by UI panels that lack ctx)
+        if let Some(new_idx) = self.pending_camera_switch.take() {
+            self.switch_camera(new_idx, ctx);
+        }
+        if self.pending_multi_camera_rebuild {
+            self.pending_multi_camera_rebuild = false;
+            // Capture state before rebuild so position/playing/selection are preserved
+            let state = self.grid_view.as_ref().map(|g| g.preserved_state());
+            let rebuild_info = self.grid_view.as_ref().map(|g| (g.mode, g.fixed_episode, g.start_episode));
+            if let Some((mode, fixed_ep, start_ep)) = rebuild_info {
+                match mode {
+                    crate::grid::GridMode::MultiCamera => {
+                        if let Some(ds) = &self.dataset {
+                            let grid = GridView::new_multi_camera(ctx, fixed_ep, ds, &self.selected_cameras);
+                            self.grid_view = Some(grid);
+                        }
+                    }
+                    crate::grid::GridMode::MultiEpisode
+                        if self.camera_display != CameraDisplay::SingleCamera =>
+                    {
+                        self.enter_grid_with_camera_display(ctx, start_ep);
+                    }
+                    _ => {}
+                }
+
+                if let (Some(grid), Some(state)) = (&mut self.grid_view, &state) {
+                    grid.restore_state(state);
+                }
+            }
+        }
+
         self.update_title(ctx);
 
         // Menu bar
@@ -329,16 +414,27 @@ impl eframe::App for App {
                 self.show_episode_list(ctx, ui);
             });
 
+        // Right side panel:
+        // - Single-video mode: Episode Info panel (with camera ComboBox, trajectory, etc.)
+        // - Any grid mode: Cameras panel (camera widget + trajectory), no Episode Info
         if !in_grid {
-            // Right panel: info + annotation
             egui::SidePanel::right("info_panel")
                 .default_width(200.0)
                 .min_width(160.0)
                 .show(ctx, |ui| {
                     self.show_info_panel(ui);
                 });
+        } else {
+            egui::SidePanel::right("cameras_panel")
+                .default_width(280.0)
+                .min_width(200.0)
+                .show(ctx, |ui| {
+                    self.show_cameras_panel(ui);
+                });
+        }
 
-            // Bottom: slider row + footer row
+        if !in_grid {
+            // Single-video mode: footer + slider
             egui::TopBottomPanel::bottom("footer")
                 .exact_height(22.0)
                 .show(ctx, |ui| {
@@ -359,16 +455,7 @@ impl eframe::App for App {
                     }
                 });
         } else {
-            // Grid mode: trajectory panel + minimal footer
-            if self.show_trajectory && self.robot_kinematics.is_some() {
-                egui::SidePanel::right("trajectory_panel")
-                    .default_width(280.0)
-                    .min_width(200.0)
-                    .show(ctx, |ui| {
-                        self.show_trajectory_panel(ui);
-                    });
-            }
-
+            // Grid mode: footer + slider (trajectory is inside the cameras panel)
             egui::TopBottomPanel::bottom("grid_footer")
                 .exact_height(22.0)
                 .show(ctx, |ui| {

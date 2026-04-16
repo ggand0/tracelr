@@ -12,6 +12,25 @@ const PANE_LABEL_FONT_SIZE: f32 = 11.0;
 const PANE_BORDER_RADIUS: f32 = 2.0;
 const PANE_BORDER_WIDTH: f32 = 2.0;
 
+/// Preserved state captured before a grid rebuild and restored after.
+/// Keeps per-pane frame positions, playing state, and pane selection
+/// stable across rebuilds (camera switch, checkbox toggle, etc.).
+pub(crate) struct PreservedGridState {
+    pub relative_frames: Vec<usize>,
+    pub playing: bool,
+    pub selected_panes: HashSet<usize>,
+}
+
+/// What the grid is displaying.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GridMode {
+    /// One camera, multiple episodes (default grid view).
+    /// When `cam_count > 1`, panes are tiled with camera groups per episode.
+    MultiEpisode,
+    /// One episode, multiple cameras.
+    MultiCamera,
+}
+
 /// Dataset context needed to create grid panes.
 pub(crate) struct GridDataset<'a> {
     pub video_paths: &'a [PathBuf],
@@ -23,6 +42,11 @@ pub(crate) struct GridDataset<'a> {
 /// A single pane in the grid, displaying one episode's video.
 struct GridPane {
     episode_index: usize,
+    /// Which camera this pane shows (e.g. "observation.images.wrist").
+    #[allow(dead_code)]
+    video_key: String,
+    /// Display label for the pane (e.g. "ep 001" or "wrist").
+    label: String,
     player: VideoPlayer,
     current_texture: Option<egui::TextureHandle>,
     current_frame: usize,
@@ -36,8 +60,16 @@ pub(crate) struct GridView {
     panes: Vec<GridPane>,
     pub cols: usize,
     pub rows: usize,
+    pub mode: GridMode,
     /// First episode index shown in the grid (top-left pane).
     pub start_episode: usize,
+    /// Fixed episode for MultiCamera mode.
+    pub fixed_episode: usize,
+    /// Number of cameras per episode when tiled/subgrid (1 = single camera).
+    pub cam_count: usize,
+    /// If true, panes are rendered grouped inside episode cells (subgrid layout).
+    /// If false, each pane is a flat cell in the grid (tiled layout).
+    pub subgrid: bool,
     pub playing: bool,
     last_frame_time: Option<Instant>,
     fps: u32,
@@ -48,7 +80,7 @@ pub(crate) struct GridView {
 }
 
 impl GridView {
-    /// Create a new grid view starting at `start_episode` with `cols x rows` panes.
+    /// Create a new multi-episode grid starting at `start_episode` with `cols x rows` panes.
     pub fn new(
         ctx: &egui::Context,
         cols: usize,
@@ -64,7 +96,17 @@ impl GridView {
             if ep_idx >= ds.video_paths.len() {
                 break;
             }
-            if let Some(pane) = Self::create_pane(ctx, ep_idx, ds) {
+            let video_path = match ds.video_paths.get(ep_idx) {
+                Some(p) => p,
+                None => continue,
+            };
+            let ep = match ds.episodes.get(ep_idx) {
+                Some(ep) => ep,
+                None => continue,
+            };
+            let seek_range = ds.seek_ranges.get(ep_idx).and_then(|r| *r);
+            let label = format!("ep {:03}", ep_idx);
+            if let Some(pane) = Self::create_pane(ctx, ep_idx, "", &label, video_path, ep.length, seek_range, ds.fps) {
                 panes.push(pane);
             }
         }
@@ -73,7 +115,11 @@ impl GridView {
             panes,
             cols,
             rows,
+            mode: GridMode::MultiEpisode,
             start_episode,
+            fixed_episode: start_episode,
+            cam_count: 1,
+            subgrid: false,
             playing: true,
             last_frame_time: None,
             fps: ds.fps,
@@ -82,30 +128,213 @@ impl GridView {
         }
     }
 
+    /// Create a new multi-camera grid showing all selected cameras for a single episode.
+    pub fn new_multi_camera(
+        ctx: &egui::Context,
+        episode_index: usize,
+        ds: &crate::dataset::LeRobotDataset,
+        selected_cameras: &[bool],
+    ) -> Self {
+        let ep = match ds.episodes.get(episode_index) {
+            Some(ep) => ep,
+            None => {
+                return Self {
+                    panes: Vec::new(),
+                    cols: 1,
+                    rows: 1,
+                    mode: GridMode::MultiCamera,
+                    start_episode: episode_index,
+                    fixed_episode: episode_index,
+                    cam_count: 1,
+                    subgrid: false,
+                    playing: true,
+                    last_frame_time: None,
+                    fps: ds.info.fps,
+                    selected_panes: HashSet::new(),
+                    frame_slider_dragging: false,
+                };
+            }
+        };
+
+        let selected_keys = selected_video_keys(&ds.info.video_keys, selected_cameras);
+
+        let cam_count = selected_keys.len();
+        let (cols, rows) = camera_grid_size(cam_count);
+
+        let mut panes = Vec::with_capacity(cam_count);
+        for &video_key in &selected_keys {
+            let video_path = ds.video_path(episode_index, video_key);
+            let (from, to) = ds.episode_time_range(episode_index, video_key);
+            let seek_range = if to > from { Some((from, to)) } else { None };
+            let display_name = crate::dataset::camera_display_name(video_key);
+            if let Some(pane) = Self::create_pane(
+                ctx, episode_index, video_key, display_name,
+                &video_path, ep.length, seek_range, ds.info.fps,
+            ) {
+                panes.push(pane);
+            }
+        }
+
+        Self {
+            panes,
+            cols,
+            rows,
+            mode: GridMode::MultiCamera,
+            start_episode: episode_index,
+            fixed_episode: episode_index,
+            cam_count,
+            subgrid: false,
+            playing: true,
+            last_frame_time: None,
+            fps: ds.info.fps,
+            selected_panes: HashSet::new(),
+            frame_slider_dragging: false,
+        }
+    }
+
+    /// Create a tiled multi-episode grid where each episode gets `cam_count` panes.
+    /// Cols snap to `cam_count * groups_per_row` where groups_per_row = max(1, grid_cols / cam_count).
+    pub fn new_tiled(
+        ctx: &egui::Context,
+        grid_cols: usize,
+        grid_rows: usize,
+        start_episode: usize,
+        ds: &crate::dataset::LeRobotDataset,
+        selected_cameras: &[bool],
+    ) -> Self {
+        let selected_keys = selected_video_keys(&ds.info.video_keys, selected_cameras);
+        let cam_count = selected_keys.len().max(1);
+        let groups_per_row = (grid_cols / cam_count).max(1);
+        let actual_cols = cam_count * groups_per_row;
+        let rows = grid_rows;
+        let mut panes = Vec::with_capacity(rows * actual_cols);
+        for row in 0..rows {
+            for group in 0..groups_per_row {
+                let ep_idx = start_episode + row * groups_per_row + group;
+                let ep = match ds.episodes.get(ep_idx) {
+                    Some(ep) => ep,
+                    None => break,
+                };
+                for &video_key in &selected_keys {
+                    let video_path = ds.video_path(ep_idx, video_key);
+                    let (from, to) = ds.episode_time_range(ep_idx, video_key);
+                    let seek_range = if to > from { Some((from, to)) } else { None };
+                    let cam_name = crate::dataset::camera_display_name(video_key);
+                    let label = format!("ep {:03} {}", ep_idx, cam_name);
+                    if let Some(pane) = Self::create_pane(
+                        ctx, ep_idx, video_key, &label,
+                        &video_path, ep.length, seek_range, ds.info.fps,
+                    ) {
+                        panes.push(pane);
+                    }
+                }
+            }
+        }
+
+        Self {
+            panes,
+            cols: actual_cols,
+            rows,
+            mode: GridMode::MultiEpisode,
+            start_episode,
+            fixed_episode: start_episode,
+            cam_count,
+            subgrid: false,
+            playing: true,
+            last_frame_time: None,
+            fps: ds.info.fps,
+            selected_panes: HashSet::new(),
+            frame_slider_dragging: false,
+        }
+    }
+
+    /// Create a subgrid multi-episode grid where each episode cell contains cam_count sub-panes.
+    /// Outer grid is `grid_cols × grid_rows` (user's layout). Total panes = episodes × cam_count.
+    pub fn new_subgrid(
+        ctx: &egui::Context,
+        grid_cols: usize,
+        grid_rows: usize,
+        start_episode: usize,
+        ds: &crate::dataset::LeRobotDataset,
+        selected_cameras: &[bool],
+    ) -> Self {
+        let selected_keys = selected_video_keys(&ds.info.video_keys, selected_cameras);
+        let cam_count = selected_keys.len().max(1);
+        let total_cells = grid_cols * grid_rows;
+        let mut panes = Vec::with_capacity(total_cells * cam_count);
+
+        for cell in 0..total_cells {
+            let ep_idx = start_episode + cell;
+            let ep = match ds.episodes.get(ep_idx) {
+                Some(ep) => ep,
+                None => break,
+            };
+            for &video_key in &selected_keys {
+                let video_path = ds.video_path(ep_idx, video_key);
+                let (from, to) = ds.episode_time_range(ep_idx, video_key);
+                let seek_range = if to > from { Some((from, to)) } else { None };
+                let cam_name = crate::dataset::camera_display_name(video_key);
+                let label = format!("ep {:03} {}", ep_idx, cam_name);
+                if let Some(pane) = Self::create_pane(
+                    ctx, ep_idx, video_key, &label,
+                    &video_path, ep.length, seek_range, ds.info.fps,
+                ) {
+                    panes.push(pane);
+                }
+            }
+        }
+
+        Self {
+            panes,
+            cols: grid_cols,
+            rows: grid_rows,
+            mode: GridMode::MultiEpisode,
+            start_episode,
+            fixed_episode: start_episode,
+            cam_count,
+            subgrid: true,
+            playing: true,
+            last_frame_time: None,
+            fps: ds.info.fps,
+            selected_panes: HashSet::new(),
+            frame_slider_dragging: false,
+        }
+    }
+
+    /// Number of episodes visible when tiled.
+    pub fn episodes_shown(&self) -> usize {
+        if self.cam_count > 1 {
+            self.panes.len() / self.cam_count
+        } else {
+            self.panes.len()
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn create_pane(
         ctx: &egui::Context,
-        ep_idx: usize,
-        ds: &GridDataset,
+        episode_index: usize,
+        video_key: &str,
+        label: &str,
+        video_path: &std::path::Path,
+        total_frames: usize,
+        seek_range: Option<(f64, f64)>,
+        fps: u32,
     ) -> Option<GridPane> {
-        let video_path = ds.video_paths.get(ep_idx)?;
-        let ep = ds.episodes.get(ep_idx)?;
-        let total_frames = ep.length;
-
-        let from_ts = ds.seek_ranges.get(ep_idx)
-            .and_then(|r| r.as_ref())
-            .map(|(from, _)| *from)
-            .unwrap_or(0.0);
+        let from_ts = seek_range.map(|(from, _)| from).unwrap_or(0.0);
         let start_frame = if from_ts > 0.0 {
-            (from_ts * ds.fps as f64) as usize
+            (from_ts * fps as f64) as usize
         } else {
             0
         };
 
         let player_total = start_frame + total_frames;
-        let player = VideoPlayer::new(ctx, video_path, player_total, ds.fps, start_frame);
+        let player = VideoPlayer::new(ctx, video_path, player_total, fps, start_frame);
 
         Some(GridPane {
-            episode_index: ep_idx,
+            episode_index,
+            video_key: video_key.to_string(),
+            label: label.to_string(),
             player,
             current_texture: None,
             current_frame: start_frame,
@@ -211,7 +440,8 @@ impl GridView {
         }
     }
 
-    /// Rebuild all panes from `self.start_episode` using current cols/rows.
+    /// Rebuild all panes from `self.start_episode` using current cols/rows (multi-episode only).
+    /// Preserves `playing` state; callers that want to force playback should set it explicitly.
     fn rebuild(&mut self, ctx: &egui::Context, ds: &GridDataset) {
         self.panes.clear();
         self.selected_panes.clear();
@@ -222,12 +452,21 @@ impl GridView {
             if ep_idx >= total {
                 break;
             }
-            if let Some(pane) = Self::create_pane(ctx, ep_idx, ds) {
+            let video_path = match ds.video_paths.get(ep_idx) {
+                Some(p) => p,
+                None => continue,
+            };
+            let ep = match ds.episodes.get(ep_idx) {
+                Some(ep) => ep,
+                None => continue,
+            };
+            let seek_range = ds.seek_ranges.get(ep_idx).and_then(|r| *r);
+            let label = format!("ep {:03}", ep_idx);
+            if let Some(pane) = Self::create_pane(ctx, ep_idx, "", &label, video_path, ep.length, seek_range, ds.fps) {
                 self.panes.push(pane);
             }
         }
 
-        self.playing = true;
         self.last_frame_time = None;
     }
 
@@ -266,8 +505,47 @@ impl GridView {
         self.rebuild(ctx, ds);
     }
 
+    /// Page episodes in tiled/subgrid mode (shift by episodes_shown).
+    pub fn navigate_page_tiled(
+        &mut self,
+        delta: isize,
+        ctx: &egui::Context,
+        grid_cols: usize,
+        grid_rows: usize,
+        ds: &crate::dataset::LeRobotDataset,
+        selected_cameras: &[bool],
+    ) {
+        let total = ds.episodes.len();
+        if total == 0 {
+            return;
+        }
+        let eps_shown = self.episodes_shown();
+        let new_start = if delta > 0 {
+            let s = self.start_episode + eps_shown;
+            if s >= total { return; }
+            s
+        } else {
+            if self.start_episode == 0 { return; }
+            self.start_episode.saturating_sub(eps_shown)
+        };
+        if self.subgrid {
+            *self = Self::new_subgrid(ctx, grid_cols, grid_rows, new_start, ds, selected_cameras);
+        } else {
+            *self = Self::new_tiled(ctx, grid_cols, grid_rows, new_start, ds, selected_cameras);
+        }
+    }
+
     /// Render the grid into the given UI area.
     pub fn show(&mut self, ui: &mut egui::Ui, theme_muted: egui::Color32, theme_accent: egui::Color32) {
+        if self.subgrid {
+            self.show_subgrid(ui, theme_muted, theme_accent);
+        } else {
+            self.show_flat(ui, theme_muted, theme_accent);
+        }
+    }
+
+    /// Flat rendering: each pane is its own cell in the grid.
+    fn show_flat(&mut self, ui: &mut egui::Ui, theme_muted: egui::Color32, theme_accent: egui::Color32) {
         let available = ui.available_size();
         let cols = self.cols;
         let rows = self.rows;
@@ -276,6 +554,7 @@ impl GridView {
         let pane_h = (available.y - PANE_SPACING * (rows as f32 - 1.0)) / rows as f32;
 
         let origin = ui.cursor().min;
+        let mut clicked_episode: Option<usize> = None;
 
         for (idx, pane) in self.panes.iter().enumerate() {
             let col = idx % cols;
@@ -285,66 +564,169 @@ impl GridView {
             let y = origin.y + row as f32 * (pane_h + PANE_SPACING);
             let rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(pane_w, pane_h));
 
-            // Allocate interactive area
             let response = ui.allocate_rect(rect, egui::Sense::click());
 
-            if response.clicked() {
-                if self.selected_panes.contains(&idx) {
-                    self.selected_panes.remove(&idx);
-                } else {
-                    self.selected_panes.insert(idx);
-                }
+            if self.mode == GridMode::MultiEpisode && response.clicked() {
+                clicked_episode = Some(pane.episode_index);
             }
 
-            // Background
             let is_selected = self.selected_panes.contains(&idx);
-            let bg = if is_selected {
-                egui::Color32::from_gray(50)
-            } else {
-                egui::Color32::from_gray(30)
-            };
+            let bg = if is_selected { egui::Color32::from_gray(50) } else { egui::Color32::from_gray(30) };
             ui.painter().rect_filled(rect, PANE_BORDER_RADIUS, bg);
 
-            // Video frame
-            if let Some(tex) = &pane.current_texture {
-                let tex_size = tex.size_vec2();
-                let img_rect = egui::Rect::from_min_size(
-                    rect.min,
-                    egui::vec2(pane_w, pane_h - PANE_LABEL_HEIGHT),
-                );
-                let scale = (img_rect.width() / tex_size.x)
-                    .min(img_rect.height() / tex_size.y)
-                    .min(1.0);
-                let display_size = tex_size * scale;
-                let img_pos = egui::pos2(
-                    img_rect.center().x - display_size.x / 2.0,
-                    img_rect.center().y - display_size.y / 2.0,
-                );
-                let img_draw_rect = egui::Rect::from_min_size(img_pos, display_size);
-                ui.painter().image(
-                    tex.id(),
-                    img_draw_rect,
-                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                    egui::Color32::WHITE,
-                );
-            }
+            Self::draw_pane_frame(ui, pane, rect, pane_w, pane_h);
 
-            // Episode label at bottom of pane
             let ep_frame = pane.current_frame.saturating_sub(pane.episode_start_frame);
-            let label = format!("ep {:03}  {}/{}", pane.episode_index, ep_frame + 1, pane.total_frames);
+            let label = format!("{}  {}/{}", pane.label, ep_frame + 1, pane.total_frames);
             let label_pos = egui::pos2(rect.min.x + PANE_SPACING, rect.max.y - PANE_LABEL_HEIGHT + 2.0);
             ui.painter().text(
-                label_pos,
-                egui::Align2::LEFT_TOP,
-                &label,
+                label_pos, egui::Align2::LEFT_TOP, &label,
                 egui::FontId::monospace(PANE_LABEL_FONT_SIZE),
                 if is_selected { theme_accent } else { theme_muted },
             );
 
-            // Selection border
             if is_selected {
                 ui.painter().rect_stroke(rect, PANE_BORDER_RADIUS, egui::Stroke::new(PANE_BORDER_WIDTH, theme_accent), egui::StrokeKind::Outside);
             }
+        }
+
+        if let Some(ep) = clicked_episode {
+            self.toggle_episode_selection(ep);
+        }
+    }
+
+    /// Subgrid rendering: each episode cell contains cam_count sub-panes.
+    fn show_subgrid(&mut self, ui: &mut egui::Ui, theme_muted: egui::Color32, theme_accent: egui::Color32) {
+        let available = ui.available_size();
+        let cols = self.cols;
+        let rows = self.rows;
+        let cam_count = self.cam_count;
+
+        let cell_w = (available.x - PANE_SPACING * (cols as f32 - 1.0)) / cols as f32;
+        let cell_h = (available.y - PANE_SPACING * (rows as f32 - 1.0)) / rows as f32;
+
+        let (sub_cols, sub_rows) = camera_grid_size(cam_count);
+        let sub_spacing = 2.0_f32;
+
+        let origin = ui.cursor().min;
+        let ep_count = self.panes.len() / cam_count.max(1);
+
+        // Subtle border color for cell separation (slightly brighter than bg)
+        let cell_border = egui::Color32::from_gray(70);
+
+        let mut clicked_episode: Option<usize> = None;
+
+        for cell_idx in 0..ep_count {
+            let cell_col = cell_idx % cols;
+            let cell_row = cell_idx / cols;
+            if cell_row >= rows { break; }
+
+            let cx = origin.x + cell_col as f32 * (cell_w + PANE_SPACING);
+            let cy = origin.y + cell_row as f32 * (cell_h + PANE_SPACING);
+            let cell_rect = egui::Rect::from_min_size(egui::pos2(cx, cy), egui::vec2(cell_w, cell_h));
+
+            let response = ui.allocate_rect(cell_rect, egui::Sense::click());
+            let first_pane_idx = cell_idx * cam_count;
+            let episode_index = self.panes.get(first_pane_idx).map(|p| p.episode_index);
+
+            if response.clicked() {
+                if let Some(ep) = episode_index {
+                    clicked_episode = Some(ep);
+                }
+            }
+
+            let is_selected = self.selected_panes.contains(&first_pane_idx);
+            let bg = if is_selected { egui::Color32::from_gray(50) } else { egui::Color32::from_gray(30) };
+            ui.painter().rect_filled(cell_rect, PANE_BORDER_RADIUS, bg);
+
+            // Sub-pane area (above label)
+            let content_h = cell_h - PANE_LABEL_HEIGHT;
+            let sub_w = (cell_w - sub_spacing * (sub_cols as f32 - 1.0)) / sub_cols as f32;
+            let sub_h = (content_h - sub_spacing * (sub_rows as f32 - 1.0)) / sub_rows as f32;
+
+            for cam_idx in 0..cam_count {
+                let pane_idx = cell_idx * cam_count + cam_idx;
+                let pane = match self.panes.get(pane_idx) {
+                    Some(p) => p,
+                    None => break,
+                };
+
+                let sc = cam_idx % sub_cols;
+                let sr = cam_idx / sub_cols;
+                let sx = cx + sc as f32 * (sub_w + sub_spacing);
+                let sy = cy + sr as f32 * (sub_h + sub_spacing);
+                let sub_rect = egui::Rect::from_min_size(egui::pos2(sx, sy), egui::vec2(sub_w, sub_h));
+
+                Self::draw_pane_frame(ui, pane, sub_rect, sub_w, sub_h);
+            }
+
+            // Episode label at bottom of cell
+            let first_pane = &self.panes[first_pane_idx];
+            let ep_frame = first_pane.current_frame.saturating_sub(first_pane.episode_start_frame);
+            let label = format!("ep {:03}  {}/{}", first_pane.episode_index, ep_frame + 1, first_pane.total_frames);
+            let label_pos = egui::pos2(cell_rect.min.x + PANE_SPACING, cell_rect.max.y - PANE_LABEL_HEIGHT + 2.0);
+            ui.painter().text(
+                label_pos, egui::Align2::LEFT_TOP, &label,
+                egui::FontId::monospace(PANE_LABEL_FONT_SIZE),
+                if is_selected { theme_accent } else { theme_muted },
+            );
+
+            // Cell boundary: subtle border always visible to separate episodes
+            let stroke = if is_selected {
+                egui::Stroke::new(PANE_BORDER_WIDTH, theme_accent)
+            } else {
+                egui::Stroke::new(1.0, cell_border)
+            };
+            ui.painter().rect_stroke(cell_rect, PANE_BORDER_RADIUS, stroke, egui::StrokeKind::Outside);
+        }
+
+        if let Some(ep) = clicked_episode {
+            self.toggle_episode_selection(ep);
+        }
+    }
+
+    /// Toggle selection of all panes for an episode. Used by multi-cam click handlers.
+    fn toggle_episode_selection(&mut self, episode_index: usize) {
+        // Find all pane indices with this episode_index
+        let matching: Vec<usize> = self.panes.iter().enumerate()
+            .filter(|(_, p)| p.episode_index == episode_index)
+            .map(|(i, _)| i)
+            .collect();
+        if matching.is_empty() {
+            return;
+        }
+        // If any of the matching panes are selected, deselect all; otherwise select all
+        let any_selected = matching.iter().any(|i| self.selected_panes.contains(i));
+        if any_selected {
+            for i in matching {
+                self.selected_panes.remove(&i);
+            }
+        } else {
+            for i in matching {
+                self.selected_panes.insert(i);
+            }
+        }
+    }
+
+    /// Draw a video frame texture into a rect, centered and scaled to fit.
+    fn draw_pane_frame(ui: &egui::Ui, pane: &GridPane, rect: egui::Rect, w: f32, h: f32) {
+        if let Some(tex) = &pane.current_texture {
+            let tex_size = tex.size_vec2();
+            let img_rect = egui::Rect::from_min_size(rect.min, egui::vec2(w, h));
+            let scale = (img_rect.width() / tex_size.x)
+                .min(img_rect.height() / tex_size.y)
+                .min(1.0);
+            let display_size = tex_size * scale;
+            let img_pos = egui::pos2(
+                img_rect.center().x - display_size.x / 2.0,
+                img_rect.center().y - display_size.y / 2.0,
+            );
+            let img_draw_rect = egui::Rect::from_min_size(img_pos, display_size);
+            ui.painter().image(
+                tex.id(), img_draw_rect,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
         }
     }
 
@@ -362,6 +744,48 @@ impl GridView {
             .iter()
             .map(|p| (p.episode_index, p.current_frame.saturating_sub(p.episode_start_frame)))
             .collect()
+    }
+
+    /// Seek each pane to a preserved relative frame position. Used by camera
+    /// switching to preserve per-pane playback position across grid rebuild.
+    /// `relative_frames` should be in the same order as panes (pane-index-aligned).
+    /// Drains intermediate keyframe frames so the displayed frame matches the target.
+    pub fn seek_panes_to_relative(&mut self, relative_frames: &[usize]) {
+        for (pane, &rel) in self.panes.iter_mut().zip(relative_frames.iter()) {
+            let clamped = rel.min(pane.total_frames.saturating_sub(1));
+            let abs_frame = pane.episode_start_frame + clamped;
+            pane.player.seek(abs_frame);
+            if let Some(tex) = pane.player.drain_to_frame(abs_frame, 200) {
+                pane.current_texture = Some(tex);
+            }
+            pane.current_frame = abs_frame;
+        }
+    }
+
+    /// Capture preserved state (per-pane frames, playing, selection) before rebuild.
+    pub fn preserved_state(&self) -> PreservedGridState {
+        PreservedGridState {
+            relative_frames: self.panes.iter()
+                .map(|p| p.current_frame.saturating_sub(p.episode_start_frame))
+                .collect(),
+            playing: self.playing,
+            selected_panes: self.selected_panes.clone(),
+        }
+    }
+
+    /// Restore preserved state after rebuild. If the new pane count differs from
+    /// the captured state, all panes are seeked to the first captured frame
+    /// (the synchronized playback position).
+    pub fn restore_state(&mut self, state: &PreservedGridState) {
+        let frames = if state.relative_frames.len() == self.panes.len() {
+            state.relative_frames.clone()
+        } else {
+            let sync = state.relative_frames.first().copied().unwrap_or(0);
+            vec![sync; self.panes.len()]
+        };
+        self.seek_panes_to_relative(&frames);
+        self.playing = state.playing;
+        self.selected_panes = state.selected_panes.clone();
     }
 
     /// Maximum episode length across all panes (for slider range).
@@ -399,5 +823,28 @@ impl GridView {
         }
         self.playing = true;
         self.last_frame_time = None;
+    }
+}
+
+/// Filter video keys by the selected_cameras bitmask.
+fn selected_video_keys<'a>(video_keys: &'a [String], selected: &[bool]) -> Vec<&'a str> {
+    video_keys.iter().enumerate()
+        .filter(|(i, _)| selected.get(*i).copied().unwrap_or(false))
+        .map(|(_, k)| k.as_str())
+        .collect()
+}
+
+/// Compute (cols, rows) for a given camera count.
+pub(crate) fn camera_grid_size(count: usize) -> (usize, usize) {
+    match count {
+        0 | 1 => (1, 1),
+        2 => (2, 1),
+        3 | 4 => (2, 2),
+        5 | 6 => (3, 2),
+        _ => {
+            let cols = (count as f64).sqrt().ceil() as usize;
+            let rows = count.div_ceil(cols);
+            (cols, rows)
+        }
     }
 }

@@ -417,6 +417,12 @@ impl DecodeLruCache {
         self.entries.insert(episode_index, image);
         self.order.push_back(episode_index);
     }
+
+    /// Remove all cached entries.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.order.clear();
+    }
 }
 
 // ============================================================================
@@ -504,6 +510,36 @@ impl VideoPlayer {
                 })
             }
             Err(_) => None,
+        }
+    }
+
+    /// Blocking drain: discard frames from the channel until `frame_index >= target`,
+    /// then return that frame's texture. Used when we need an exact frame after seek
+    /// (e.g., camera switch) without showing intermediate keyframe frames.
+    /// Bounded by `timeout_ms` total wait time.
+    pub fn drain_to_frame(&mut self, target: usize, timeout_ms: u64) -> Option<egui::TextureHandle> {
+        let deadline = Instant::now() + std::time::Duration::from_millis(timeout_ms);
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return None;
+            }
+            match self.frame_rx.recv_timeout(remaining) {
+                Ok(result) => {
+                    if result.frame_index < target {
+                        continue; // discard intermediate frame
+                    }
+                    self.current_frame = result.frame_index;
+                    return result.image.map(|img| {
+                        self.ctx.load_texture(
+                            format!("vframe_{}", result.frame_index),
+                            img,
+                            egui::TextureOptions::LINEAR,
+                        )
+                    });
+                }
+                Err(_) => return None,
+            }
         }
     }
 

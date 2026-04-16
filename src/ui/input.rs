@@ -14,6 +14,10 @@ impl App {
 
         let mut g_pressed = false;
         let mut t_pressed = false;
+        let mut c_pressed = false;
+        let mut shift_c_pressed = false;
+        let mut m_pressed = false;
+        let mut n_pressed = false;
         let mut enter_pressed = false;
         let mut escape_pressed = false;
         let mut space_pressed = false;
@@ -23,6 +27,10 @@ impl App {
         ctx.input(|i| {
             g_pressed = i.key_pressed(egui::Key::G);
             t_pressed = i.key_pressed(egui::Key::T);
+            c_pressed = i.key_pressed(egui::Key::C) && !i.modifiers.shift;
+            shift_c_pressed = i.key_pressed(egui::Key::C) && i.modifiers.shift;
+            m_pressed = i.key_pressed(egui::Key::M);
+            n_pressed = i.key_pressed(egui::Key::N);
             enter_pressed = i.key_pressed(egui::Key::Enter);
             escape_pressed = i.key_pressed(egui::Key::Escape);
             space_pressed = i.key_pressed(egui::Key::Space);
@@ -64,33 +72,71 @@ impl App {
             return;
         }
 
+        // C / Shift+C cycles camera (not in multi-camera mode where all cameras are shown)
+        let in_multi_camera = self.is_camera_grid();
+        if !in_multi_camera {
+            if c_pressed {
+                self.cycle_camera(1, ctx);
+                return;
+            }
+            if shift_c_pressed {
+                self.cycle_camera(-1, ctx);
+                return;
+            }
+        }
+
+        // M toggles multi-camera view (SingleCamera ↔ Subgrid)
+        if m_pressed {
+            self.toggle_multi_camera(ctx);
+            return;
+        }
+
+        // N toggles tiled/matrix camera view
+        if n_pressed {
+            self.toggle_tiled(ctx);
+            return;
+        }
+
         // Grid mode keyboard
         if self.grid_view.is_some() {
+            let grid_mode = self.grid_view.as_ref()
+                .map(|g| g.mode)
+                .unwrap_or(crate::grid::GridMode::MultiEpisode);
+
             if space_pressed {
                 if let Some(grid) = &mut self.grid_view {
                     grid.toggle_playing();
                 }
             }
             if escape_pressed {
-                self.grid_view = None;
+                self.reset_to_initial_view(ctx);
                 return;
             }
-            // +/- resize grid
-            if plus_pressed {
-                self.grid_resize(1, ctx);
+
+            match grid_mode {
+                crate::grid::GridMode::MultiEpisode => {
+                    if plus_pressed {
+                        self.grid_resize(1, ctx);
+                    }
+                    if minus_pressed {
+                        self.grid_resize(-1, ctx);
+                    }
+                    let is_tiled = self.grid_view.as_ref()
+                        .map(|g| g.cam_count > 1).unwrap_or(false);
+                    if is_tiled {
+                        self.handle_keyboard_grid_tiled(ctx);
+                    } else {
+                        self.handle_keyboard_grid(ctx);
+                    }
+                }
+                crate::grid::GridMode::MultiCamera => {
+                    // No resize or paging in multi-camera mode
+                }
             }
-            if minus_pressed {
-                self.grid_resize(-1, ctx);
-            }
-            self.handle_keyboard_grid(ctx);
             return;
         }
 
-        // Single-video mode
-        if escape_pressed && self.viewing_video {
-            self.exit_video_mode();
-            return;
-        }
+        // Single-video mode: Escape is a no-op (already the initial view).
         if enter_pressed && !self.viewing_video {
             self.enter_video_mode(ctx);
             return;
@@ -200,15 +246,35 @@ impl App {
         });
 
         if let Some(delta) = page_delta {
-            if let Some(ds) = &self.dataset {
-                let gds = crate::grid::GridDataset {
-                    video_paths: &self.video_paths,
-                    seek_ranges: &self.seek_ranges,
-                    episodes: &ds.episodes,
-                    fps: ds.info.fps,
-                };
+            if let Some(gds) = grid_dataset!(self) {
                 if let Some(grid) = &mut self.grid_view {
                     grid.navigate_page(delta, ctx, &gds);
+                    self.scroll_to_selected = true;
+                }
+            }
+        }
+    }
+
+    /// Arrow key paging for tiled grid (pages by episodes_shown).
+    fn handle_keyboard_grid_tiled(&mut self, ctx: &egui::Context) {
+        let mut page_delta: Option<isize> = None;
+
+        ctx.input(|i| {
+            if i.key_pressed(egui::Key::ArrowRight) || i.key_pressed(egui::Key::D) {
+                page_delta = Some(1);
+            }
+            if i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::A) {
+                page_delta = Some(-1);
+            }
+        });
+
+        if let Some(delta) = page_delta {
+            if let Some(ds) = &self.dataset {
+                if let Some(grid) = &mut self.grid_view {
+                    grid.navigate_page_tiled(
+                        delta, ctx, self.grid_cols, self.grid_rows,
+                        ds, &self.selected_cameras,
+                    );
                     self.scroll_to_selected = true;
                 }
             }
