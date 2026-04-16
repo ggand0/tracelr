@@ -24,6 +24,7 @@ impl App {
         let mut plus_pressed = false;
         let mut minus_pressed = false;
         let mut l_pressed = false;
+        let mut question_pressed = false;
 
         ctx.input(|i| {
             g_pressed = i.key_pressed(egui::Key::G);
@@ -33,6 +34,7 @@ impl App {
             m_pressed = i.key_pressed(egui::Key::M);
             n_pressed = i.key_pressed(egui::Key::N);
             l_pressed = i.key_pressed(egui::Key::L);
+            question_pressed = i.key_pressed(egui::Key::Questionmark);
             enter_pressed = i.key_pressed(egui::Key::Enter);
             escape_pressed = i.key_pressed(egui::Key::Escape);
             space_pressed = i.key_pressed(egui::Key::Space);
@@ -61,6 +63,12 @@ impl App {
                 }
             }
         });
+
+        // ? toggles the shortcut bar (works in any mode)
+        if question_pressed {
+            self.show_shortcut_bar = !self.show_shortcut_bar;
+            return;
+        }
 
         // G toggles grid view
         if g_pressed {

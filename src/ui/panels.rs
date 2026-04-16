@@ -132,6 +132,21 @@ impl App {
                     }
                 });
 
+                ui.menu_button("Help", |ui| {
+                    let shortcut_label = if self.show_shortcut_bar {
+                        "Hide Shortcuts  [?]"
+                    } else {
+                        "Keyboard Shortcuts  [?]"
+                    };
+                    if ui.button(shortcut_label).clicked() {
+                        self.show_shortcut_bar = !self.show_shortcut_bar;
+                        ui.close_menu();
+                    }
+                    if ui.add_enabled(false, egui::Button::new("About...")).clicked() {
+                        ui.close_menu();
+                    }
+                });
+
                 // FPS display (right-aligned)
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
@@ -140,6 +155,71 @@ impl App {
                             .color(self.theme.muted)
                             .size(11.0),
                     );
+                });
+            });
+        });
+    }
+
+    pub(crate) fn show_shortcut_bar(&self, ctx: &egui::Context) {
+        if !self.show_shortcut_bar {
+            return;
+        }
+        egui::TopBottomPanel::top("shortcut_bar").show(ctx, |ui| {
+            let font = egui::FontId::monospace(12.0);
+            let dim = egui::Color32::from_gray(140);
+            ui.horizontal(|ui| {
+                let in_grid = self.grid_view.is_some();
+                let has_multi_cam = self.dataset.as_ref()
+                    .map(|ds| ds.info.video_keys.len() > 1)
+                    .unwrap_or(false);
+                let has_traj = self.robot_kinematics.is_some();
+                let is_tiled = in_grid && self.grid_view.as_ref()
+                    .map(|g| g.cam_count > 1).unwrap_or(false);
+
+                let hints: Vec<&str> = if !in_grid {
+                    // Single video mode
+                    let mut h = vec!["[G] grid", "[Space] play/pause", "[A/D] episode"];
+                    if has_multi_cam { h.push("[C] camera"); }
+                    if has_traj { h.push("[T] trajectory"); }
+                    h.push("[Enter] video mode");
+                    h
+                } else {
+                    match self.grid_view.as_ref().map(|g| g.mode) {
+                        Some(crate::grid::GridMode::MultiCamera) => {
+                            vec!["[M] exit", "[Space] play/pause", "[Esc] reset"]
+                        }
+                        Some(crate::grid::GridMode::MultiEpisode) if is_tiled => {
+                            let mut h = vec!["[G] exit", "[N] untile", "[+/-] resize", "[A/D] page"];
+                            h.push("[L] labels");
+                            h.push("[Esc] reset");
+                            h
+                        }
+                        _ => {
+                            let mut h = vec!["[G] exit"];
+                            if has_multi_cam {
+                                h.push("[M] multi-cam");
+                                h.push("[N] tiled");
+                                h.push("[C] camera");
+                            }
+                            h.push("[+/-] resize");
+                            h.push("[A/D] page");
+                            h.push("[L] labels");
+                            if has_traj { h.push("[T] trajectory"); }
+                            h.push("[Esc] reset");
+                            h
+                        }
+                    }
+                };
+
+                for (i, hint) in hints.iter().enumerate() {
+                    if i > 0 {
+                        ui.label(egui::RichText::new("|").font(font.clone()).color(egui::Color32::from_gray(60)));
+                    }
+                    ui.label(egui::RichText::new(*hint).font(font.clone()).color(dim));
+                }
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(egui::RichText::new("[?] hide").font(font.clone()).color(egui::Color32::from_gray(100)));
                 });
             });
         });
@@ -893,7 +973,6 @@ impl App {
     pub(crate) fn show_grid_footer(&self, ui: &mut egui::Ui) {
         let font = egui::FontId::monospace(13.0);
         let bright = egui::Color32::from_gray(200);
-        let dim = egui::Color32::from_gray(160);
 
         ui.horizontal(|ui| {
             if let Some(grid) = &self.grid_view {
@@ -903,8 +982,6 @@ impl App {
                         .font(font.clone())
                         .color(bright),
                 );
-
-                let is_tiled = grid.cam_count > 1;
 
                 match grid.mode {
                     crate::grid::GridMode::MultiCamera => {
@@ -921,77 +998,28 @@ impl App {
                         let total = self.video_paths.len();
                         let eps = grid.episodes_shown();
                         let end = (grid.start_episode + eps).min(total);
-                        if is_tiled {
-                            let groups_per_row = grid.cols / grid.cam_count;
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "{}x{}  {} eps  {} cams  ep {}-{} / {}",
-                                    grid.cols, grid.rows,
-                                    groups_per_row, grid.cam_count,
-                                    grid.start_episode, end.saturating_sub(1), total,
-                                ))
-                                .font(font.clone())
-                                .color(bright),
-                            );
-                        } else {
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "Grid {}x{}", grid.cols, grid.rows,
-                                ))
-                                .font(font.clone())
-                                .color(bright),
-                            );
-                            ui.separator();
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "ep {}-{} / {}",
-                                    grid.start_episode, end.saturating_sub(1), total,
-                                ))
-                                .font(font.clone())
-                                .color(dim),
-                            );
-                            if let Some(ds) = &self.dataset {
-                                if ds.info.video_keys.len() > 1 {
-                                    let cam = ds.info.video_keys
-                                        .get(self.current_video_key_index)
-                                        .map(|k| crate::dataset::camera_display_name(k))
-                                        .unwrap_or("?");
-                                    ui.separator();
-                                    ui.label(
-                                        egui::RichText::new(cam)
-                                            .font(font.clone())
-                                            .color(bright),
-                                    );
-                                }
+                        let mut info = format!(
+                            "ep {}-{} / {}",
+                            grid.start_episode, end.saturating_sub(1), total,
+                        );
+                        if grid.cam_count > 1 {
+                            info.push_str(&format!("  {} cams", grid.cam_count));
+                        } else if let Some(ds) = &self.dataset {
+                            if ds.info.video_keys.len() > 1 {
+                                let cam = ds.info.video_keys
+                                    .get(self.current_video_key_index)
+                                    .map(|k| crate::dataset::camera_display_name(k))
+                                    .unwrap_or("?");
+                                info.push_str(&format!("  {}", cam));
                             }
                         }
+                        ui.label(
+                            egui::RichText::new(info)
+                                .font(font.clone())
+                                .color(bright),
+                        );
                     }
                 }
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let hint = match (grid.mode, is_tiled) {
-                        (crate::grid::GridMode::MultiCamera, _) => "[M] exit",
-                        (crate::grid::GridMode::MultiEpisode, true) => {
-                            "[G] exit  [N] untile  [+/-] resize  [←/→] page"
-                        }
-                        (crate::grid::GridMode::MultiEpisode, false) => {
-                            let has_multi_cam = self.dataset.as_ref()
-                                .map(|ds| ds.info.video_keys.len() > 1)
-                                .unwrap_or(false);
-                            match (self.robot_kinematics.is_some(), has_multi_cam) {
-                                (true, true) => "[G] exit  [M] multi-cam  [N] tiled  [C] camera  [T] traj  [+/-] [←/→]",
-                                (true, false) => "[G] exit  [T] trajectory  [+/-] resize  [←/→] page",
-                                (false, true) => "[G] exit  [M] multi-cam  [N] tiled  [C] camera  [+/-] resize  [←/→] page",
-                                (false, false) => "[G] exit  [+/-] resize  [←/→] page",
-                            }
-                        }
-                    };
-                    ui.label(
-                        egui::RichText::new(hint)
-                            .font(font.clone())
-                            .color(dim),
-                    );
-                });
             }
         });
     }

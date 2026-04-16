@@ -115,6 +115,8 @@ pub struct App {
     pub(crate) perf: PerfTracker,
     pub(crate) initial_size_set: bool,
     pub(crate) show_cache_overlay: bool,
+    /// Whether the keyboard shortcut bar is visible below the menu bar.
+    pub(crate) show_shortcut_bar: bool,
 }
 
 impl App {
@@ -166,6 +168,7 @@ impl App {
             perf: PerfTracker::new(),
             initial_size_set: false,
             show_cache_overlay: false,
+            show_shortcut_bar: false,
         };
 
         if let Some(path) = initial_path {
@@ -425,8 +428,9 @@ impl eframe::App for App {
 
         self.update_title(ctx);
 
-        // Menu bar
+        // Menu bar and shortcut bar
         self.show_menu_bar(ctx);
+        self.show_shortcut_bar(ctx);
 
         let in_grid = self.grid_view.is_some();
 
