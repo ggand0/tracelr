@@ -3,6 +3,7 @@ name = "tracelr"
 version = "0.1.0"
 edition = "2021"
 description = "A fast desktop tool for exploring and tracing LeRobot datasets"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 eframe = { version = "0.31", default-features = false, features = ["default_fonts", "wgpu", "x11", "wayland"] }
