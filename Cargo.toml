@@ -21,9 +21,20 @@ arrow = { version = "55", default-features = false }
 k = "0.32"
 urdf-rs = "0.8"
 webbrowser = "1"
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [build-dependencies]
 chrono = "0.4"
+winres = "0.1"
+
+[package.metadata.appimage]
+icon = "./assets/icon_256.png"
+
+[package.metadata.bundle]
+name = "tracelr"
+identifier = "com.ggando.tracelr"
+icon = ["assets/tracelr.icns"]
+short_description = "A fast desktop tool for exploring and tracing LeRobot datasets"
 
 [profile.opt-dev]
 inherits = "release"

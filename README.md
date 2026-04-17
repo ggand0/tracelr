@@ -79,6 +79,24 @@ cargo build --profile opt-dev
 
 The `opt-dev` profile gives release-level optimization with faster incremental builds (no LTO).
 
+### Linux icon setup
+
+On GNOME 46+ (Ubuntu 24.04+), the taskbar icon requires installing a `.desktop` file and icon to XDG locations:
+
+```bash
+mkdir -p ~/.local/share/icons/hicolor/256x256/apps
+cp assets/icon_256.png ~/.local/share/icons/hicolor/256x256/apps/tracelr.png
+gtk-update-icon-cache -f ~/.local/share/icons/hicolor/
+cp assets/tracelr.desktop ~/.local/share/applications/
+```
+
+For an AppImage build, update the `Exec=` line to point to the AppImage path:
+
+```bash
+sed -i "s|Exec=.*|Exec=/path/to/tracelr.AppImage %f|" \
+    ~/.local/share/applications/tracelr.desktop
+```
+
 ## Usage
 
 ```bash
