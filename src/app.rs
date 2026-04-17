@@ -26,6 +26,27 @@ pub(crate) enum CameraDisplay {
     Subgrid,
 }
 
+/// What label to show on each grid pane.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LabelMode {
+    /// Compact badge at top-left (ep number only, dark background).
+    Compact,
+    /// Full label at bottom-left (ep + camera + frame counter, dark background).
+    Verbose,
+    /// No label.
+    Hidden,
+}
+
+impl LabelMode {
+    pub fn cycle(self) -> Self {
+        match self {
+            Self::Compact => Self::Verbose,
+            Self::Verbose => Self::Hidden,
+            Self::Hidden => Self::Compact,
+        }
+    }
+}
+
 
 pub struct App {
     // Data
@@ -65,6 +86,8 @@ pub struct App {
     pub(crate) selected_cameras: Vec<bool>,
     /// How cameras are displayed in multi-episode grid mode.
     pub(crate) camera_display: CameraDisplay,
+    /// Label display mode for grid panes.
+    pub(crate) label_mode: LabelMode,
 
     /// Set to true when navigation changes the selected episode(s),
     /// consumed after one frame to auto-scroll the episode list.
@@ -92,6 +115,10 @@ pub struct App {
     pub(crate) perf: PerfTracker,
     pub(crate) initial_size_set: bool,
     pub(crate) show_cache_overlay: bool,
+    /// Whether the keyboard shortcut bar is visible below the menu bar.
+    pub(crate) show_shortcut_bar: bool,
+    /// Whether the About modal is visible.
+    pub(crate) show_about: bool,
 }
 
 impl App {
@@ -128,6 +155,7 @@ impl App {
             grid_rows: 2,
             selected_cameras: Vec::new(),
             camera_display: CameraDisplay::SingleCamera,
+            label_mode: LabelMode::Compact,
             scroll_to_selected: false,
             robot_kinematics: None,
             trajectory_cache: TrajectoryCache::new(100),
@@ -142,6 +170,8 @@ impl App {
             perf: PerfTracker::new(),
             initial_size_set: false,
             show_cache_overlay: false,
+            show_shortcut_bar: false,
+            show_about: false,
         };
 
         if let Some(path) = initial_path {
@@ -401,8 +431,9 @@ impl eframe::App for App {
 
         self.update_title(ctx);
 
-        // Menu bar
+        // Menu bar and shortcut bar
         self.show_menu_bar(ctx);
+        self.show_shortcut_bar(ctx);
 
         let in_grid = self.grid_view.is_some();
 
@@ -488,5 +519,8 @@ impl eframe::App for App {
                 cache.show_debug_overlay(ctx, self.current_episode, self.video_paths.len());
             }
         }
+
+        // About modal (rendered last so it sits on top)
+        crate::about::show_about_modal(ctx, &mut self.show_about, &self.theme);
     }
 }

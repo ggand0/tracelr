@@ -1,4 +1,3 @@
-#[allow(dead_code)] // Used in About dialog (Phase 4)
 pub struct BuildInfo;
 
 #[allow(dead_code)]

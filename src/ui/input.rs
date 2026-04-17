@@ -23,6 +23,8 @@ impl App {
         let mut space_pressed = false;
         let mut plus_pressed = false;
         let mut minus_pressed = false;
+        let mut l_pressed = false;
+        let mut question_pressed = false;
 
         ctx.input(|i| {
             g_pressed = i.key_pressed(egui::Key::G);
@@ -31,6 +33,8 @@ impl App {
             shift_c_pressed = i.key_pressed(egui::Key::C) && i.modifiers.shift;
             m_pressed = i.key_pressed(egui::Key::M);
             n_pressed = i.key_pressed(egui::Key::N);
+            l_pressed = i.key_pressed(egui::Key::L);
+            question_pressed = i.key_pressed(egui::Key::Questionmark);
             enter_pressed = i.key_pressed(egui::Key::Enter);
             escape_pressed = i.key_pressed(egui::Key::Escape);
             space_pressed = i.key_pressed(egui::Key::Space);
@@ -59,6 +63,12 @@ impl App {
                 }
             }
         });
+
+        // ? toggles the shortcut bar (works in any mode)
+        if question_pressed {
+            self.show_shortcut_bar = !self.show_shortcut_bar;
+            return;
+        }
 
         // G toggles grid view
         if g_pressed {
@@ -94,6 +104,12 @@ impl App {
         // N toggles tiled/matrix camera view
         if n_pressed {
             self.toggle_tiled(ctx);
+            return;
+        }
+
+        // L cycles label mode in grid view
+        if l_pressed && self.grid_view.is_some() {
+            self.label_mode = self.label_mode.cycle();
             return;
         }
 
