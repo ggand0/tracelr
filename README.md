@@ -81,21 +81,26 @@ The `opt-dev` profile gives release-level optimization with faster incremental b
 
 ### Linux icon setup
 
-On GNOME 46+ (Ubuntu 24.04+), the taskbar icon requires installing a `.desktop` file and icon to XDG locations:
+On GNOME 46+ (Ubuntu 24.04+), the taskbar icon requires installing a `.desktop` file and icon to XDG locations. Install the PNG to the hicolor icon theme and the desktop file to `~/.local/share/applications/`, pointing `Exec=` at the absolute path of your binary:
 
 ```bash
-mkdir -p ~/.local/share/icons/hicolor/256x256/apps
-cp assets/icon_256.png ~/.local/share/icons/hicolor/256x256/apps/tracelr.png
+# Install icons at every size GNOME might request
+for size in 16 32 48 64 128 256 512; do
+    mkdir -p ~/.local/share/icons/hicolor/${size}x${size}/apps
+    cp assets/icon_${size}.png \
+        ~/.local/share/icons/hicolor/${size}x${size}/apps/tracelr.png
+done
 gtk-update-icon-cache -f ~/.local/share/icons/hicolor/
-cp resources/tracelr.desktop ~/.local/share/applications/
+
+# Install the desktop file, substituting Exec= with your binary path
+# (e.g. $PWD/target/opt-dev/tracelr for a local cargo build, or
+#  /path/to/tracelr.AppImage for an AppImage build)
+TRACELR_BIN="$PWD/target/opt-dev/tracelr"
+sed "s|Exec=.*|Exec=${TRACELR_BIN} %f|" resources/tracelr.desktop \
+    > ~/.local/share/applications/tracelr.desktop
 ```
 
-For an AppImage build, update the `Exec=` line to point to the AppImage path:
-
-```bash
-sed -i "s|Exec=.*|Exec=/path/to/tracelr.AppImage %f|" \
-    ~/.local/share/applications/tracelr.desktop
-```
+GIO silently rejects desktop files whose `Exec=` cannot be resolved, so the command must be either an absolute path to an existing binary or a bare name that resolves via `$PATH`. Without this step the icon will not appear even though the file looks valid.
 
 ## Usage
 
