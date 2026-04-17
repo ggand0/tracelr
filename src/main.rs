@@ -47,14 +47,35 @@ struct Args {
     urdf: Option<PathBuf>,
 }
 
+fn load_icon() -> Option<egui::IconData> {
+    #[cfg(target_os = "macos")]
+    static ICON: &[u8] = include_bytes!("../assets/icon_macos_512.png");
+    #[cfg(not(target_os = "macos"))]
+    static ICON: &[u8] = include_bytes!("../assets/icon_256.png");
+    let img = image::load_from_memory(ICON).ok()?.into_rgba8();
+    let (width, height) = img.dimensions();
+    Some(egui::IconData {
+        rgba: img.into_raw(),
+        width,
+        height,
+    })
+}
+
 fn main() -> eframe::Result {
     env_logger::init();
     let args = Args::parse();
 
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([1280.0, 720.0])
+        .with_drag_and_drop(true)
+        .with_app_id("tracelr");
+
+    if let Some(icon) = load_icon() {
+        viewport = viewport.with_icon(std::sync::Arc::new(icon));
+    }
+
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1280.0, 720.0])
-            .with_drag_and_drop(true),
+        viewport,
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };

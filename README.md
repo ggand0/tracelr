@@ -79,6 +79,29 @@ cargo build --profile opt-dev
 
 The `opt-dev` profile gives release-level optimization with faster incremental builds (no LTO).
 
+### Linux icon setup
+
+On GNOME 46+ (Ubuntu 24.04+), the taskbar icon requires installing a `.desktop` file and icon to XDG locations. Install the PNG to the hicolor icon theme and the desktop file to `~/.local/share/applications/`, pointing `Exec=` at the absolute path of your binary:
+
+```bash
+# Install icons at every size GNOME might request
+for size in 16 32 48 64 128 256 512; do
+    mkdir -p ~/.local/share/icons/hicolor/${size}x${size}/apps
+    cp assets/icon_${size}.png \
+        ~/.local/share/icons/hicolor/${size}x${size}/apps/tracelr.png
+done
+gtk-update-icon-cache -f ~/.local/share/icons/hicolor/
+
+# Install the desktop file, substituting Exec= with your binary path
+# (e.g. $PWD/target/opt-dev/tracelr for a local cargo build, or
+#  /path/to/tracelr.AppImage for an AppImage build)
+TRACELR_BIN="$PWD/target/opt-dev/tracelr"
+sed "s|Exec=.*|Exec=${TRACELR_BIN} %f|" resources/tracelr.desktop \
+    > ~/.local/share/applications/tracelr.desktop
+```
+
+If `Exec=` points to a command that cannot be found (a bare name that is not in `$PATH`, or an absolute path that does not exist), GNOME silently ignores the entire `.desktop` file and no icon will appear — even though the file looks valid. Make sure the value you substitute above is either an absolute path to the binary or a name that resolves via `$PATH`.
+
 ## Usage
 
 ```bash

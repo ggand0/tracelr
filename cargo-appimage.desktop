@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=tracelr
+Exec=tracelr
+Icon=tracelr
+Type=Application
+Categories=Development;
+StartupWMClass=tracelr
+Comment=Explore and trace LeRobot datasets
