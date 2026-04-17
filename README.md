@@ -87,7 +87,7 @@ On GNOME 46+ (Ubuntu 24.04+), the taskbar icon requires installing a `.desktop` 
 mkdir -p ~/.local/share/icons/hicolor/256x256/apps
 cp assets/icon_256.png ~/.local/share/icons/hicolor/256x256/apps/tracelr.png
 gtk-update-icon-cache -f ~/.local/share/icons/hicolor/
-cp assets/tracelr.desktop ~/.local/share/applications/
+cp resources/tracelr.desktop ~/.local/share/applications/
 ```
 
 For an AppImage build, update the `Exec=` line to point to the AppImage path:
