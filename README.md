@@ -100,7 +100,7 @@ sed "s|Exec=.*|Exec=${TRACELR_BIN} %f|" resources/tracelr.desktop \
     > ~/.local/share/applications/tracelr.desktop
 ```
 
-GIO silently rejects desktop files whose `Exec=` cannot be resolved, so the command must be either an absolute path to an existing binary or a bare name that resolves via `$PATH`. Without this step the icon will not appear even though the file looks valid.
+If `Exec=` points to a command that cannot be found (a bare name that is not in `$PATH`, or an absolute path that does not exist), GNOME silently ignores the entire `.desktop` file and no icon will appear — even though the file looks valid. Make sure the value you substitute above is either an absolute path to the binary or a name that resolves via `$PATH`.
 
 ## Usage
 
