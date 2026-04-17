@@ -48,6 +48,9 @@ struct Args {
 }
 
 fn load_icon() -> Option<egui::IconData> {
+    #[cfg(target_os = "macos")]
+    static ICON: &[u8] = include_bytes!("../assets/icon_macos_512.png");
+    #[cfg(not(target_os = "macos"))]
     static ICON: &[u8] = include_bytes!("../assets/icon_256.png");
     let img = image::load_from_memory(ICON).ok()?.into_rgba8();
     let (width, height) = img.dimensions();
