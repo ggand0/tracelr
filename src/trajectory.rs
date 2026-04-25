@@ -139,27 +139,41 @@ pub(crate) fn load_episode_states(parquet_path: &Path, filter_episode: Option<us
             .column_by_name("observation.state")
             .ok_or_else(|| "No 'observation.state' column in parquet".to_string())?;
 
-        let list_arr = state_col
-            .as_any()
-            .downcast_ref::<arrow::array::FixedSizeListArray>()
-            .ok_or_else(|| "observation.state is not FixedSizeListArray".to_string())?;
-
-        let values = list_arr
-            .values()
-            .as_any()
-            .downcast_ref::<arrow::array::Float32Array>()
-            .ok_or_else(|| "observation.state values are not Float32".to_string())?;
-
-        let list_size = list_arr.value_length() as usize;
-        for i in 0..list_arr.len() {
-            if let Some(ref mask) = row_mask {
-                if !mask[i] {
-                    continue;
+        if let Some(fixed_arr) = state_col.as_any().downcast_ref::<arrow::array::FixedSizeListArray>() {
+            let values = fixed_arr
+                .values()
+                .as_any()
+                .downcast_ref::<arrow::array::Float32Array>()
+                .ok_or_else(|| "observation.state values are not Float32".to_string())?;
+            let list_size = fixed_arr.value_length() as usize;
+            for i in 0..fixed_arr.len() {
+                if let Some(ref mask) = row_mask {
+                    if !mask[i] { continue; }
                 }
+                let offset = i * list_size;
+                let row: Vec<f32> = (0..list_size).map(|j| values.value(offset + j)).collect();
+                all_states.push(row);
             }
-            let offset = i * list_size;
-            let row: Vec<f32> = (0..list_size).map(|j| values.value(offset + j)).collect();
-            all_states.push(row);
+        } else if let Some(var_arr) = state_col.as_any().downcast_ref::<arrow::array::ListArray>() {
+            let values = var_arr
+                .values()
+                .as_any()
+                .downcast_ref::<arrow::array::Float32Array>()
+                .ok_or_else(|| "observation.state values are not Float32".to_string())?;
+            for i in 0..var_arr.len() {
+                if let Some(ref mask) = row_mask {
+                    if !mask[i] { continue; }
+                }
+                let start = var_arr.value_offsets()[i] as usize;
+                let end = var_arr.value_offsets()[i + 1] as usize;
+                let row: Vec<f32> = (start..end).map(|j| values.value(j)).collect();
+                all_states.push(row);
+            }
+        } else {
+            return Err(format!(
+                "observation.state is neither FixedSizeListArray nor ListArray (type: {:?})",
+                state_col.data_type(),
+            ));
         }
     }
 
