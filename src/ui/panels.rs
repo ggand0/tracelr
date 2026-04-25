@@ -1083,11 +1083,17 @@ impl App {
                 continue;
             }
             let is_v3 = ds.info.codebase_version.starts_with("v3");
+            let ep_meta = ds.episodes.get(ep_idx);
+            let (data_chunk, data_file) = ep_meta
+                .map(|m| (m.data_chunk_index, m.data_file_index))
+                .unwrap_or((0, 0));
             let parquet_path = trajectory::episode_data_path(
                 &ds.root,
                 ep_idx,
                 ds.info.chunks_size,
                 &ds.info.codebase_version,
+                data_chunk,
+                data_file,
             );
             let filter_ep = if is_v3 { Some(ep_idx) } else { None };
             match trajectory::load_episode_states(&parquet_path, filter_ep) {

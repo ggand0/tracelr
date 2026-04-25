@@ -35,6 +35,9 @@ pub(crate) struct EpisodeMeta {
     /// v3.0: per-video-key mapping to chunk/file index and timestamp range.
     /// Key = video_key, Value = (chunk_index, file_index, from_timestamp, to_timestamp)
     pub video_mapping: HashMap<String, VideoMapping>,
+    /// v3.0: which data parquet file holds this episode's observation/action data.
+    pub data_chunk_index: usize,
+    pub data_file_index: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -264,6 +267,8 @@ fn load_episodes_v2(meta_dir: &Path, total_episodes: usize) -> Result<Vec<Episod
                     tasks: raw.tasks,
                     length: raw.length,
                     video_mapping: HashMap::new(),
+                    data_chunk_index: 0,
+                    data_file_index: 0,
                 })
             })
             .collect()
@@ -274,6 +279,8 @@ fn load_episodes_v2(meta_dir: &Path, total_episodes: usize) -> Result<Vec<Episod
                 tasks: vec![],
                 length: 0,
                 video_mapping: HashMap::new(),
+                data_chunk_index: 0,
+                data_file_index: 0,
             })
             .collect())
     }
@@ -298,6 +305,8 @@ fn load_episodes_v3(
                 tasks: vec![],
                 length: 0,
                 video_mapping: HashMap::new(),
+                data_chunk_index: 0,
+                data_file_index: 0,
             })
             .collect());
     }
@@ -338,6 +347,8 @@ fn load_episodes_v3(
             let row = row.map_err(|e| format!("Read row: {}", e))?;
             let mut ep_index = 0usize;
             let mut length = 0usize;
+            let mut data_chunk_index = 0usize;
+            let mut data_file_index = 0usize;
             let mut video_mapping = HashMap::new();
 
             for (name, field) in row.get_column_iter() {
@@ -350,6 +361,16 @@ fn load_episodes_v3(
                     "length" => {
                         if let parquet::record::Field::Long(v) = field {
                             length = *v as usize;
+                        }
+                    }
+                    "data/chunk_index" => {
+                        if let parquet::record::Field::Long(v) = field {
+                            data_chunk_index = *v as usize;
+                        }
+                    }
+                    "data/file_index" => {
+                        if let parquet::record::Field::Long(v) = field {
+                            data_file_index = *v as usize;
                         }
                     }
                     _ => {}
@@ -406,6 +427,8 @@ fn load_episodes_v3(
                 tasks: vec![],
                 length,
                 video_mapping,
+                data_chunk_index,
+                data_file_index,
             });
         }
     }

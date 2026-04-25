@@ -168,27 +168,22 @@ pub(crate) fn load_episode_states(parquet_path: &Path, filter_episode: Option<us
 
 /// Build the parquet data path for an episode.
 /// v2.1: `data/chunk-NNN/episode_NNNNNN.parquet` (one file per episode)
-/// v3.0: `data/chunk-NNN/file-NNN.parquet` (shared files, need to filter by episode_index)
-pub(crate) fn episode_data_path(dataset_root: &Path, episode_index: usize, chunks_size: usize, codebase_version: &str) -> PathBuf {
-    let chunk = episode_index / chunks_size;
+/// v3.0: `data/chunk-NNN/file-NNN.parquet` using chunk/file indices from episode metadata.
+pub(crate) fn episode_data_path(
+    dataset_root: &Path,
+    episode_index: usize,
+    chunks_size: usize,
+    codebase_version: &str,
+    data_chunk_index: usize,
+    data_file_index: usize,
+) -> PathBuf {
     if codebase_version.starts_with("v3") {
-        // v3.0: episodes are packed into shared files. Find the right file.
-        // Each file holds `chunks_size` episodes, file index = episode_index / chunks_size within chunk.
-        // For simplicity, scan for files in the chunk dir.
-        let chunk_dir = dataset_root
+        dataset_root
             .join("data")
-            .join(format!("chunk-{:03}", chunk));
-        // v3.0 uses file-NNN.parquet; episode_index within chunk determines file
-        let file_idx = episode_index % chunks_size;
-        // Actually in v3.0, all episodes in a chunk may be in a single file or split.
-        // Try file-000 first (most common for small datasets).
-        let path = chunk_dir.join(format!("file-{:03}.parquet", 0));
-        if path.is_file() {
-            return path;
-        }
-        // Fallback: try matching file index
-        chunk_dir.join(format!("file-{:03}.parquet", file_idx))
+            .join(format!("chunk-{:03}", data_chunk_index))
+            .join(format!("file-{:03}.parquet", data_file_index))
     } else {
+        let chunk = episode_index / chunks_size;
         dataset_root
             .join("data")
             .join(format!("chunk-{:03}", chunk))
