@@ -11,8 +11,9 @@ Browse episodes, play back videos, and inspect metadata. Optionally enable annot
 - **Video playback** - auto-plays episodes at native framerate with Play/Pause (Space) and scrubbing (slider drag)
 - **Episode navigation** - arrow keys, skate mode (Shift+Arrow for continuous advance), click the episode list, or drag the slider
 - **Episode cache** - sliding window cache preloads neighboring episodes for instant navigation
-- **Drag and drop** - drop a dataset folder onto the window to open it
+- **Drag and drop** - drop a dataset folder onto the window to open it, or drop a `.urdf` file to install it for trajectory visualization
 - **EE trajectory visualization** - 3D end-effector trajectory plots computed via forward kinematics from URDF files, with orbit camera, ground grid, and live playhead tracking
+- **Multi-arm support** - robots with multiple arms (e.g. OpenArm bimanual) auto-detected from URDF filenames, with dropdown to switch between arms
 - **Grid view** - play multiple episodes simultaneously in a tiled grid (press G), with multi-trajectory overlay to compare episodes at a glance
 
 ### Annotation mode (`--annotate`)
@@ -170,18 +171,9 @@ enable or disable individual cameras.
 
 The app computes end-effector positions via forward kinematics from URDF files and renders 3D trajectory plots alongside video playback.
 
-**URDF discovery order:**
-
-1. `--urdf /path/to/robot.urdf` (CLI flag, highest priority)
-2. `<dataset_dir>/robot.urdf` (dataset-local)
-3. `~/.config/tracelr/robots/<robot_type>.urdf` (user config, Linux)
-4. `~/Library/Application Support/tracelr/robots/<robot_type>.urdf` (macOS)
-
-The `<robot_type>` comes from the `robot_type` field in the dataset's `meta/info.json` (e.g. `"so101_follower"`, `"openarm_follower"`).
-
 **Setting up a URDF:**
 
-Place the robot's URDF file in the config directory with a filename matching the `robot_type`:
+The easiest way is to drag and drop a `.urdf` file onto the app window. The file is copied to the robots config directory and kinematics load immediately. Alternatively, use the "Browse..." button in the trajectory panel, or place files manually:
 
 ```bash
 # Linux
@@ -192,6 +184,45 @@ cp /path/to/so101.urdf ~/.config/tracelr/robots/so101_follower.urdf
 mkdir -p ~/Library/Application\ Support/tracelr/robots/
 cp /path/to/so101.urdf ~/Library/Application\ Support/tracelr/robots/so101_follower.urdf
 ```
+
+When no URDF is found, the trajectory panel shows the expected filename and an "Open robots folder" button to open the config directory in your file manager.
+
+**URDF discovery order:**
+
+1. `--urdf /path/to/robot.urdf` (CLI flag, highest priority)
+2. `<dataset_dir>/robot.urdf` (dataset-local)
+3. `<robot_type>.toml` in the config dir (explicit multi-arm config, see below)
+4. `<robot_type>*.urdf` glob in the config dir (auto-detection)
+
+The `<robot_type>` comes from the `robot_type` field in the dataset's `meta/info.json` (e.g. `"so101_follower"`, `"openarm_follower"`).
+
+**Multi-arm robots:**
+
+For robots with multiple arms, place separate URDFs with the robot type as prefix:
+
+```
+~/.config/tracelr/robots/
+  openarm_follower_left.urdf
+  openarm_follower_right.urdf
+```
+
+The app auto-detects multiple URDFs via filename glob and derives arm names from the suffix ("left", "right"). A dropdown appears in the trajectory panel to switch between arms.
+
+For explicit control (custom arm names, joint prefix filtering, EE frame overrides), create an optional `<robot_type>.toml`:
+
+```toml
+[[arm]]
+name = "Left Arm"
+urdf = "openarm_follower_left.urdf"
+# joint_prefix = "openarm_left_"   # for bimanual datasets with prefixed state columns
+# ee_frame = "custom_frame"        # override auto-detected EE frame
+
+[[arm]]
+name = "Right Arm"
+urdf = "openarm_follower_right.urdf"
+```
+
+**Joint name matching:**
 
 Joint names in the URDF must match the `.pos` column base names in the dataset's `observation.state` features. For example, if the dataset has `shoulder_pan.pos`, the URDF joint should be named `shoulder_pan`. The app auto-detects the end-effector frame (deepest leaf link in the kinematic chain) and extracts only `.pos` indices from `observation.state`, so interleaved pos/vel/torque formats (like OpenArm) work automatically.
 
