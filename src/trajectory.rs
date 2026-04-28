@@ -280,11 +280,6 @@ pub(crate) fn pos_indices_from_state_names(state_names: &[String]) -> Vec<usize>
         .collect()
 }
 
-/// Discover the URDF file for a dataset.
-/// Search order:
-/// 1. `<dataset_root>/robot.urdf`
-/// 2. `~/.config/tracelr/robots/<robot_type>.urdf`
-/// 3. Bundled paths for known robots
 pub(crate) fn discover_urdf(dataset_root: &Path, robot_type: Option<&str>) -> Option<PathBuf> {
     // 1. Dataset-local
     let local = dataset_root.join("robot.urdf");
@@ -306,4 +301,244 @@ pub(crate) fn discover_urdf(dataset_root: &Path, robot_type: Option<&str>) -> Op
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn fixtures_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures")
+    }
+
+    fn load_so101_kin() -> RobotKinematics {
+        let urdf = fixtures_dir().join("so101_follower.urdf");
+        RobotKinematics::from_urdf(&urdf, None).expect("failed to load SO101 URDF")
+    }
+
+    #[derive(serde::Deserialize)]
+    struct PoseFile {
+        poses: Vec<Pose>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct Pose {
+        name: String,
+        #[allow(dead_code)]
+        joints_deg: Vec<f64>,
+        actual_joints_deg: Option<Vec<f64>>,
+        fk_actual_ee_m: Option<Vec<f64>>,
+        measured_ee_m: Option<Vec<f64>>,
+        #[allow(dead_code)]
+        measurement_accuracy_cm: Option<f64>,
+    }
+
+    fn load_ground_truth_poses() -> Vec<Pose> {
+        let path = fixtures_dir().join("so101_ground_truth_poses.json");
+        let data = std::fs::read_to_string(&path).expect("failed to read poses JSON");
+        let file: PoseFile = serde_json::from_str(&data).expect("failed to parse poses JSON");
+        file.poses
+    }
+
+    // --- Layer 1: k crate vs placo (tight tolerance) ---
+
+    #[test]
+    fn fk_matches_placo_all_poses() {
+        let kin = load_so101_kin();
+        let poses = load_ground_truth_poses();
+        let tolerance_m = 0.0005; // 0.5mm
+
+        for pose in &poses {
+            let actual_joints = pose.actual_joints_deg.as_ref()
+                .unwrap_or_else(|| panic!("pose '{}' missing actual_joints_deg", pose.name));
+            let placo_ee = pose.fk_actual_ee_m.as_ref()
+                .unwrap_or_else(|| panic!("pose '{}' missing fk_actual_ee_m", pose.name));
+
+            let k_ee = kin.forward_kinematics_deg(actual_joints);
+
+            for (axis, (&k_val, &placo_val)) in ["x", "y", "z"].iter()
+                .zip(k_ee.iter().zip(placo_ee.iter()))
+            {
+                let diff = (k_val - placo_val).abs();
+                assert!(
+                    diff < tolerance_m,
+                    "pose '{}' axis {}: k={:.4} placo={:.4} diff={:.4}m (tolerance={:.4}m)",
+                    pose.name, axis, k_val, placo_val, diff, tolerance_m,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fk_matches_placo_reset() {
+        let kin = load_so101_kin();
+        let poses = load_ground_truth_poses();
+        let reset = poses.iter().find(|p| p.name == "reset").expect("no reset pose");
+
+        let actual = reset.actual_joints_deg.as_ref().unwrap();
+        let expected = reset.fk_actual_ee_m.as_ref().unwrap();
+        let ee = kin.forward_kinematics_deg(actual);
+
+        for i in 0..3 {
+            assert!((ee[i] - expected[i]).abs() < 0.0005,
+                "reset axis {}: k={:.4} placo={:.4}", i, ee[i], expected[i]);
+        }
+    }
+
+    #[test]
+    fn fk_matches_placo_straight_forward() {
+        let kin = load_so101_kin();
+        let poses = load_ground_truth_poses();
+        let pose = poses.iter().find(|p| p.name == "straight-forward").expect("no straight-forward pose");
+
+        let actual = pose.actual_joints_deg.as_ref().unwrap();
+        let expected = pose.fk_actual_ee_m.as_ref().unwrap();
+        let ee = kin.forward_kinematics_deg(actual);
+
+        for i in 0..3 {
+            assert!((ee[i] - expected[i]).abs() < 0.0005,
+                "straight-forward axis {}: k={:.4} placo={:.4}", i, ee[i], expected[i]);
+        }
+    }
+
+    // --- Layer 2: FK vs physical measurement (loose tolerance) ---
+
+    #[test]
+    fn fk_within_physical_measurement_tolerance() {
+        let kin = load_so101_kin();
+        let poses = load_ground_truth_poses();
+        let tolerance_m = 0.03; // 3cm -- tape measure accuracy + base origin offset
+
+        for pose in &poses {
+            let actual_joints = match &pose.actual_joints_deg {
+                Some(j) => j,
+                None => continue,
+            };
+            let measured = match &pose.measured_ee_m {
+                Some(m) => m,
+                None => continue,
+            };
+
+            let ee = kin.forward_kinematics_deg(actual_joints);
+
+            // X (forward) -- consistently good across all poses
+            let x_diff = (ee[0] - measured[0]).abs();
+            assert!(
+                x_diff < tolerance_m,
+                "pose '{}' X: fk={:.3} measured={:.3} diff={:.3}m",
+                pose.name, ee[0], measured[0], x_diff,
+            );
+
+            // Y (lateral) -- check magnitude, sign can differ by measurement convention
+            let y_mag_diff = (ee[1].abs() - measured[1].abs()).abs();
+            assert!(
+                y_mag_diff < tolerance_m,
+                "pose '{}' |Y|: fk={:.3} measured={:.3} diff={:.3}m",
+                pose.name, ee[1].abs(), measured[1].abs(), y_mag_diff,
+            );
+        }
+    }
+
+    // --- Tier 2: Data pipeline unit tests ---
+
+    #[test]
+    fn pos_indices_so101_contiguous() {
+        let names: Vec<String> = vec![
+            "shoulder_pan.pos", "shoulder_lift.pos", "elbow_flex.pos",
+            "wrist_flex.pos", "wrist_roll.pos", "gripper.pos",
+        ].into_iter().map(String::from).collect();
+        assert_eq!(pos_indices_from_state_names(&names), vec![0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn pos_indices_openarm_interleaved() {
+        let names: Vec<String> = vec![
+            "joint_1.pos", "joint_1.vel", "joint_1.torque",
+            "joint_2.pos", "joint_2.vel", "joint_2.torque",
+            "joint_3.pos", "joint_3.vel", "joint_3.torque",
+            "joint_4.pos", "joint_4.vel", "joint_4.torque",
+            "joint_5.pos", "joint_5.vel", "joint_5.torque",
+            "joint_6.pos", "joint_6.vel", "joint_6.torque",
+            "joint_7.pos", "joint_7.vel", "joint_7.torque",
+            "gripper.pos",
+        ].into_iter().map(String::from).collect();
+        assert_eq!(pos_indices_from_state_names(&names), vec![0, 3, 6, 9, 12, 15, 18]);
+    }
+
+    #[test]
+    fn pos_indices_empty_input() {
+        let names: Vec<String> = vec![];
+        assert_eq!(pos_indices_from_state_names(&names), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn pos_indices_no_pos_suffix() {
+        let names: Vec<String> = vec!["joint_1.vel", "joint_2.vel"]
+            .into_iter().map(String::from).collect();
+        assert_eq!(pos_indices_from_state_names(&names), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn compute_trajectory_uses_pos_indices() {
+        let kin = load_so101_kin();
+        let states = vec![
+            vec![10.0f32, 999.0, 20.0, 999.0, 30.0, 999.0, 0.0, 999.0, 0.0, 999.0],
+            vec![0.0f32, 999.0, 0.0, 999.0, 0.0, 999.0, 0.0, 999.0, 0.0, 999.0],
+        ];
+        let pos_indices = vec![0, 2, 4, 6, 8];
+
+        let traj = kin.compute_trajectory(&states, &pos_indices);
+        assert_eq!(traj.positions.len(), 2);
+
+        let ee_direct = kin.forward_kinematics_deg(&[10.0, 20.0, 30.0, 0.0, 0.0]);
+        for i in 0..3 {
+            assert!((traj.positions[0][i] - ee_direct[i]).abs() < 1e-10,
+                "pos_indices extraction mismatch at axis {}", i);
+        }
+
+        let ee_zero = kin.forward_kinematics_deg(&[0.0, 0.0, 0.0, 0.0, 0.0]);
+        for i in 0..3 {
+            assert!((traj.positions[1][i] - ee_zero[i]).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn so101_dof_is_five() {
+        let kin = load_so101_kin();
+        assert_eq!(kin.dof(), 5);
+    }
+
+    #[test]
+    fn so101_ee_autodetect() {
+        let urdf = fixtures_dir().join("so101_follower.urdf");
+        let chain = k::Chain::<f64>::from_urdf_file(&urdf).unwrap();
+        let leaf = find_deepest_leaf(&chain).unwrap();
+        let name = leaf.joint().name.clone();
+        // gripper_frame_joint is a fixed joint at the tip of the wrist chain -- correct EE
+        assert_eq!(name, "gripper_frame_joint",
+            "SO101 auto-detected EE should be gripper_frame_joint (fixed), got '{}'", name);
+    }
+
+    #[test]
+    fn episode_data_path_v21() {
+        let root = Path::new("/fake/dataset");
+        let path = episode_data_path(root, 0, 1000, "v2.1");
+        assert_eq!(path, root.join("data/chunk-000/episode_000000.parquet"));
+
+        let path = episode_data_path(root, 74, 1000, "v2.1");
+        assert_eq!(path, root.join("data/chunk-000/episode_000074.parquet"));
+
+        let path = episode_data_path(root, 1500, 1000, "v2.1");
+        assert_eq!(path, root.join("data/chunk-001/episode_001500.parquet"));
+    }
+
+    #[test]
+    fn home_position_sanity() {
+        let kin = load_so101_kin();
+        let ee = kin.forward_kinematics_deg(&[0.0, 0.0, 0.0, 0.0, 0.0]);
+        // At home (all zeros), EE should be somewhere in front of the base
+        assert!(ee[0] > 0.1, "home X should be positive (forward), got {:.3}", ee[0]);
+        assert!(ee[1].abs() < 0.05, "home Y should be near zero (centered), got {:.3}", ee[1]);
+    }
 }

@@ -1,0 +1,175 @@
+{
+  "robot": "so101_follower",
+  "urdf": "so101_new_calib.urdf from TheRobotStudio/SO-ARM100",
+  "note": "Joint values in degrees (DEGREES norm mode). Physical measurements in meters from base center.",
+  "poses": [
+    {
+      "name": "reset",
+      "joints_deg": [
+        4.4,
+        -1.32,
+        6.81,
+        0.75,
+        92.88,
+        4.71
+      ],
+      "joint_names": [
+        "shoulder_pan",
+        "shoulder_lift",
+        "elbow_flex",
+        "wrist_flex",
+        "wrist_roll",
+        "gripper"
+      ],
+      "fk_ee_m": [
+        0.3861,
+        -0.0348,
+        0.205
+      ],
+      "actual_joints_deg": [
+        3.43,
+        0.62,
+        17.63,
+        5.14,
+        92.88
+      ],
+      "fk_actual_ee_m": [
+        0.3733,
+        -0.0281,
+        0.1286
+      ],
+      "measured_ee_m": [
+        0.365,
+        0.02,
+        0.135
+      ],
+      "measurement_accuracy_cm": 1.0
+    },
+    {
+      "name": "straight-forward",
+      "joints_deg": [
+        0.26,
+        105.49,
+        -88.22,
+        -2.07,
+        92.79,
+        5.03
+      ],
+      "joint_names": [
+        "shoulder_pan",
+        "shoulder_lift",
+        "elbow_flex",
+        "wrist_flex",
+        "wrist_roll",
+        "gripper"
+      ],
+      "fk_ee_m": [
+        0.4543,
+        -0.01,
+        -0.0171
+      ],
+      "measured_ee_m": [
+        0.44,
+        -0.01,
+        0.02
+      ],
+      "measurement_accuracy_cm": 1.0,
+      "actual_joints_deg": [
+        1.23,
+        103.74,
+        -85.41,
+        -1.54,
+        92.7
+      ],
+      "fk_actual_ee_m": [
+        0.4539,
+        -0.017,
+        -0.0206
+      ]
+    },
+    {
+      "name": "rest",
+      "joints_deg": [
+        -0.79,
+        -104.0,
+        98.24,
+        78.64,
+        92.79,
+        5.03
+      ],
+      "joint_names": [
+        "shoulder_pan",
+        "shoulder_lift",
+        "elbow_flex",
+        "wrist_flex",
+        "wrist_roll",
+        "gripper"
+      ],
+      "fk_ee_m": [
+        0.1341,
+        -0.0068,
+        -0.0169
+      ],
+      "measured_ee_m": [
+        0.135,
+        -0.01,
+        0.01
+      ],
+      "measurement_accuracy_cm": 1.0,
+      "actual_joints_deg": [
+        -0.53,
+        -98.11,
+        94.37,
+        76.09,
+        92.79
+      ],
+      "fk_actual_ee_m": [
+        0.1367,
+        -0.0072,
+        -0.0092
+      ]
+    },
+    {
+      "name": "diag-30",
+      "joints_deg": [
+        24.18,
+        58.11,
+        -47.34,
+        79.34,
+        92.79,
+        5.03
+      ],
+      "joint_names": [
+        "shoulder_pan",
+        "shoulder_lift",
+        "elbow_flex",
+        "wrist_flex",
+        "wrist_roll",
+        "gripper"
+      ],
+      "fk_ee_m": [
+        0.2857,
+        -0.1197,
+        -0.027
+      ],
+      "measured_ee_m": [
+        0.28,
+        0.12,
+        0.005
+      ],
+      "measurement_accuracy_cm": 1.0,
+      "actual_joints_deg": [
+        22.15,
+        53.19,
+        -41.63,
+        79.52,
+        92.88
+      ],
+      "fk_actual_ee_m": [
+        0.2838,
+        -0.1084,
+        -0.0195
+      ]
+    }
+  ]
+}
