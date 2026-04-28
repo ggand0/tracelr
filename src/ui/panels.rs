@@ -172,7 +172,7 @@ impl App {
                 let has_multi_cam = self.dataset.as_ref()
                     .map(|ds| ds.info.video_keys.len() > 1)
                     .unwrap_or(false);
-                let has_traj = self.robot_kinematics.is_some();
+                let has_traj = !self.arms.is_empty();
                 let is_tiled = in_grid && self.grid_view.as_ref()
                     .map(|g| g.cam_count > 1 && !g.subgrid).unwrap_or(false);
                 let is_subgrid = in_grid && self.grid_view.as_ref()
@@ -1046,18 +1046,44 @@ impl App {
         );
         ui.separator();
 
-        if self.robot_kinematics.is_none() {
+        if self.arms.is_empty() {
             let robot_type = self.dataset.as_ref()
                 .and_then(|ds| ds.info.robot_type.clone());
             self.show_urdf_missing_panel(ui, robot_type.as_deref());
             return;
         }
 
+        // Arm selector (only shown when multiple arms are loaded)
+        if self.arms.len() > 1 {
+            let prev_arm = self.active_arm_index;
+            let current_name = self.arms.get(self.active_arm_index)
+                .map(|a| a.name.as_str())
+                .unwrap_or("default");
+            egui::ComboBox::from_id_salt("arm_select")
+                .selected_text(current_name)
+                .show_ui(ui, |ui| {
+                    for (i, arm) in self.arms.iter().enumerate() {
+                        ui.selectable_value(
+                            &mut self.active_arm_index,
+                            i,
+                            &arm.name,
+                        );
+                    }
+                });
+            if self.active_arm_index != prev_arm {
+                self.trajectory_cache = crate::trajectory::TrajectoryCache::new(100);
+            }
+            ui.add_space(4.0);
+        }
+
         let ds = match &self.dataset {
             Some(ds) => ds,
             None => return,
         };
-        let kin = self.robot_kinematics.as_ref().unwrap();
+
+        let arm_idx = self.active_arm_index.min(self.arms.len().saturating_sub(1));
+        let kin = &self.arms[arm_idx].kinematics;
+        let pos_indices = &self.arms[arm_idx].pos_indices;
 
         // Collect episode indices + frames to display
         let (pane_episodes, selected_episodes) = if let Some(grid) = &self.grid_view {
@@ -1100,7 +1126,7 @@ impl App {
             let filter_ep = if is_v3 { Some(ep_idx) } else { None };
             match trajectory::load_episode_states(&parquet_path, filter_ep) {
                 Ok(states) => {
-                    let traj = kin.compute_trajectory(&states, &self.state_pos_indices);
+                    let traj = kin.compute_trajectory(&states, pos_indices);
                     log::debug!(
                         "Computed trajectory for ep {}: {} points",
                         ep_idx,

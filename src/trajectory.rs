@@ -16,6 +16,25 @@ pub(crate) struct RobotKinematics {
     serial: k::SerialChain<f64>,
 }
 
+pub(crate) struct ArmKinematics {
+    pub name: String,
+    pub kinematics: RobotKinematics,
+    pub pos_indices: Vec<usize>,
+}
+
+#[derive(serde::Deserialize)]
+struct RobotConfig {
+    arm: Vec<ArmConfig>,
+}
+
+#[derive(serde::Deserialize)]
+struct ArmConfig {
+    name: String,
+    urdf: String,
+    joint_prefix: Option<String>,
+    ee_frame: Option<String>,
+}
+
 impl RobotKinematics {
     /// Load a URDF and build the kinematic chain.
     /// If `ee_frame` is Some, use that link; otherwise auto-detect the deepest leaf link.
@@ -97,6 +116,19 @@ impl RobotKinematics {
 
     pub fn dof(&self) -> usize {
         self.serial.dof()
+    }
+
+    pub fn joint_names(&self) -> Vec<String> {
+        self.serial
+            .iter()
+            .filter(|n| {
+                matches!(
+                    n.joint().joint_type,
+                    k::joint::JointType::Rotational { .. }
+                )
+            })
+            .map(|n| n.joint().name.clone())
+            .collect()
     }
 }
 
@@ -284,26 +316,6 @@ pub(crate) fn robots_config_dir() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("tracelr").join("robots"))
 }
 
-pub(crate) fn discover_urdf(dataset_root: &Path, robot_type: Option<&str>) -> Option<PathBuf> {
-    // 1. Dataset-local
-    let local = dataset_root.join("robot.urdf");
-    if local.is_file() {
-        return Some(local);
-    }
-
-    // 2. User config directory
-    if let Some(rt) = robot_type {
-        if let Some(robots_dir) = robots_config_dir() {
-            let user_urdf = robots_dir.join(format!("{}.urdf", rt));
-            if user_urdf.is_file() {
-                return Some(user_urdf);
-            }
-        }
-    }
-
-    None
-}
-
 pub(crate) fn install_urdf(source: &Path, robot_type: Option<&str>) -> Result<PathBuf, String> {
     let robots_dir = robots_config_dir()
         .ok_or_else(|| "Cannot determine config directory".to_string())?;
@@ -330,6 +342,177 @@ pub(crate) fn install_urdf(source: &Path, robot_type: Option<&str>) -> Result<Pa
         .map_err(|e| format!("Failed to copy URDF to {}: {}", dest.display(), e))?;
     log::info!("Installed URDF: {} -> {}", source.display(), dest.display());
     Ok(dest)
+}
+
+pub(crate) fn discover_arms(
+    dataset_root: &Path,
+    robot_type: Option<&str>,
+    state_names: &[String],
+) -> Vec<ArmKinematics> {
+    // Dataset-local single URDF
+    let local = dataset_root.join("robot.urdf");
+    if local.is_file() {
+        return load_single_arm(&local, state_names);
+    }
+
+    let rt = match robot_type {
+        Some(rt) => rt,
+        None => return Vec::new(),
+    };
+    let robots_dir = match robots_config_dir() {
+        Some(d) if d.is_dir() => d,
+        _ => return Vec::new(),
+    };
+
+    // TOML override takes priority
+    let toml_path = robots_dir.join(format!("{}.toml", rt));
+    if toml_path.is_file() {
+        return load_arms_from_toml(&toml_path, &robots_dir, state_names);
+    }
+
+    // Glob: find all <robot_type>*.urdf files
+    let mut urdf_paths: Vec<PathBuf> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&robots_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with(rt) && name_str.ends_with(".urdf") {
+                urdf_paths.push(entry.path());
+            }
+        }
+    }
+    urdf_paths.sort();
+
+    if urdf_paths.len() == 1 {
+        return load_single_arm(&urdf_paths[0], state_names);
+    }
+
+    if urdf_paths.is_empty() {
+        return Vec::new();
+    }
+
+    // Multiple URDFs: derive arm name from suffix, match joints by name intersection
+    let mut arms = Vec::new();
+    for path in &urdf_paths {
+        let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+        let arm_name = stem.strip_prefix(rt)
+            .unwrap_or(&stem)
+            .trim_start_matches('_')
+            .to_string();
+        let arm_name = if arm_name.is_empty() {
+            "default".to_string()
+        } else {
+            arm_name
+        };
+
+        match RobotKinematics::from_urdf(path, None) {
+            Ok(kin) => {
+                let pos_indices = match_pos_indices_by_joints(&kin, state_names);
+                log::info!(
+                    "Arm '{}': {} (DOF={}, pos_indices={:?})",
+                    arm_name, path.display(), kin.dof(), pos_indices,
+                );
+                arms.push(ArmKinematics { name: arm_name, kinematics: kin, pos_indices });
+            }
+            Err(e) => log::warn!("Failed to load arm '{}' from {}: {}", arm_name, path.display(), e),
+        }
+    }
+    arms
+}
+
+fn load_single_arm(urdf_path: &Path, state_names: &[String]) -> Vec<ArmKinematics> {
+    match RobotKinematics::from_urdf(urdf_path, None) {
+        Ok(kin) => {
+            let pos_indices = pos_indices_from_state_names(state_names);
+            vec![ArmKinematics {
+                name: "default".to_string(),
+                kinematics: kin,
+                pos_indices,
+            }]
+        }
+        Err(e) => {
+            log::warn!("Failed to load URDF {}: {}", urdf_path.display(), e);
+            Vec::new()
+        }
+    }
+}
+
+fn load_arms_from_toml(
+    toml_path: &Path,
+    robots_dir: &Path,
+    state_names: &[String],
+) -> Vec<ArmKinematics> {
+    let content = match std::fs::read_to_string(toml_path) {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("Failed to read {}: {}", toml_path.display(), e);
+            return Vec::new();
+        }
+    };
+    let config: RobotConfig = match toml::from_str(&content) {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("Failed to parse {}: {}", toml_path.display(), e);
+            return Vec::new();
+        }
+    };
+
+    let mut arms = Vec::new();
+    for arm_cfg in &config.arm {
+        let urdf_path = robots_dir.join(&arm_cfg.urdf);
+        let ee_frame = arm_cfg.ee_frame.as_deref();
+        match RobotKinematics::from_urdf(&urdf_path, ee_frame) {
+            Ok(kin) => {
+                let pos_indices = if let Some(prefix) = &arm_cfg.joint_prefix {
+                    pos_indices_with_prefix(state_names, prefix)
+                } else {
+                    match_pos_indices_by_joints(&kin, state_names)
+                };
+                log::info!(
+                    "Arm '{}' (toml): {} (DOF={}, pos_indices={:?})",
+                    arm_cfg.name, urdf_path.display(), kin.dof(), pos_indices,
+                );
+                arms.push(ArmKinematics {
+                    name: arm_cfg.name.clone(),
+                    kinematics: kin,
+                    pos_indices,
+                });
+            }
+            Err(e) => log::warn!(
+                "Failed to load arm '{}' from {}: {}",
+                arm_cfg.name, urdf_path.display(), e,
+            ),
+        }
+    }
+    arms
+}
+
+fn match_pos_indices_by_joints(kin: &RobotKinematics, state_names: &[String]) -> Vec<usize> {
+    let joint_names = kin.joint_names();
+    let mut indices = Vec::new();
+    for jn in &joint_names {
+        for (i, sn) in state_names.iter().enumerate() {
+            if sn.ends_with(".pos") && !sn.starts_with("gripper") {
+                let base = sn.strip_suffix(".pos").unwrap_or(sn);
+                if base == jn || base.ends_with(jn) {
+                    indices.push(i);
+                    break;
+                }
+            }
+        }
+    }
+    indices
+}
+
+fn pos_indices_with_prefix(state_names: &[String], prefix: &str) -> Vec<usize> {
+    state_names
+        .iter()
+        .enumerate()
+        .filter(|(_, name)| {
+            name.ends_with(".pos") && !name.starts_with("gripper") && name.starts_with(prefix)
+        })
+        .map(|(i, _)| i)
+        .collect()
 }
 
 #[cfg(test)]

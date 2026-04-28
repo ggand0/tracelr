@@ -77,7 +77,7 @@ impl App {
         }
 
         // T toggles trajectory panel
-        if t_pressed && self.robot_kinematics.is_some() {
+        if t_pressed && !self.arms.is_empty() {
             self.show_trajectory = !self.show_trajectory;
             return;
         }
@@ -267,10 +267,26 @@ impl App {
     }
 
     pub(crate) fn reload_kinematics_from(&mut self, urdf_path: &std::path::Path) {
+        let state_names = self.dataset.as_ref()
+            .map(|ds| ds.info.state_names.as_slice())
+            .unwrap_or(&[]);
         match crate::trajectory::RobotKinematics::from_urdf(urdf_path, None) {
             Ok(kin) => {
                 log::info!("Robot kinematics loaded: {} (DOF={})", urdf_path.display(), kin.dof());
-                self.robot_kinematics = Some(kin);
+                let pos_indices = crate::trajectory::pos_indices_from_state_names(state_names);
+                let arm = crate::trajectory::ArmKinematics {
+                    name: "default".to_string(),
+                    kinematics: kin,
+                    pos_indices,
+                };
+                // If this is a new arm variant (e.g. right arm added to existing left), append
+                // Otherwise replace the single arm
+                if self.arms.is_empty() || self.arms.len() == 1 {
+                    self.arms = vec![arm];
+                    self.active_arm_index = 0;
+                } else {
+                    self.arms.push(arm);
+                }
                 self.trajectory_cache = crate::trajectory::TrajectoryCache::new(100);
             }
             Err(e) => {

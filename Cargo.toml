@@ -21,6 +21,7 @@ parquet = "55"
 arrow = { version = "55", default-features = false }
 k = "0.32"
 urdf-rs = "0.8"
+toml = "0.8"
 webbrowser = "1"
 image = { version = "0.25", default-features = false, features = ["png"] }
 
