@@ -280,6 +280,10 @@ pub(crate) fn pos_indices_from_state_names(state_names: &[String]) -> Vec<usize>
         .collect()
 }
 
+pub(crate) fn robots_config_dir() -> Option<PathBuf> {
+    dirs::config_dir().map(|d| d.join("tracelr").join("robots"))
+}
+
 pub(crate) fn discover_urdf(dataset_root: &Path, robot_type: Option<&str>) -> Option<PathBuf> {
     // 1. Dataset-local
     let local = dataset_root.join("robot.urdf");
@@ -289,11 +293,8 @@ pub(crate) fn discover_urdf(dataset_root: &Path, robot_type: Option<&str>) -> Op
 
     // 2. User config directory
     if let Some(rt) = robot_type {
-        if let Some(config_dir) = dirs::config_dir() {
-            let user_urdf = config_dir
-                .join("tracelr")
-                .join("robots")
-                .join(format!("{}.urdf", rt));
+        if let Some(robots_dir) = robots_config_dir() {
+            let user_urdf = robots_dir.join(format!("{}.urdf", rt));
             if user_urdf.is_file() {
                 return Some(user_urdf);
             }
@@ -301,6 +302,34 @@ pub(crate) fn discover_urdf(dataset_root: &Path, robot_type: Option<&str>) -> Op
     }
 
     None
+}
+
+pub(crate) fn install_urdf(source: &Path, robot_type: Option<&str>) -> Result<PathBuf, String> {
+    let robots_dir = robots_config_dir()
+        .ok_or_else(|| "Cannot determine config directory".to_string())?;
+    std::fs::create_dir_all(&robots_dir)
+        .map_err(|e| format!("Failed to create {}: {}", robots_dir.display(), e))?;
+
+    let source_name = source
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "robot.urdf".to_string());
+
+    let filename = if let Some(rt) = robot_type {
+        if source_name.starts_with(rt) && source_name.ends_with(".urdf") {
+            source_name
+        } else {
+            format!("{}.urdf", rt)
+        }
+    } else {
+        source_name
+    };
+
+    let dest = robots_dir.join(&filename);
+    std::fs::copy(source, &dest)
+        .map_err(|e| format!("Failed to copy URDF to {}: {}", dest.display(), e))?;
+    log::info!("Installed URDF: {} -> {}", source.display(), dest.display());
+    Ok(dest)
 }
 
 #[cfg(test)]
@@ -523,13 +552,13 @@ mod tests {
     #[test]
     fn episode_data_path_v21() {
         let root = Path::new("/fake/dataset");
-        let path = episode_data_path(root, 0, 1000, "v2.1");
+        let path = episode_data_path(root, 0, 1000, "v2.1", 0, 0);
         assert_eq!(path, root.join("data/chunk-000/episode_000000.parquet"));
 
-        let path = episode_data_path(root, 74, 1000, "v2.1");
+        let path = episode_data_path(root, 74, 1000, "v2.1", 0, 0);
         assert_eq!(path, root.join("data/chunk-000/episode_000074.parquet"));
 
-        let path = episode_data_path(root, 1500, 1000, "v2.1");
+        let path = episode_data_path(root, 1500, 1000, "v2.1", 0, 0);
         assert_eq!(path, root.join("data/chunk-001/episode_001500.parquet"));
     }
 

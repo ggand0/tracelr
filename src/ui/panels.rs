@@ -117,10 +117,9 @@ impl App {
                     }
 
                     ui.separator();
-                    if self.robot_kinematics.is_some()
-                        && ui
-                            .checkbox(&mut self.show_trajectory, "EE Trajectory")
-                            .changed()
+                    if ui
+                        .checkbox(&mut self.show_trajectory, "EE Trajectory")
+                        .changed()
                     {
                         ui.close_menu();
                     }
@@ -450,7 +449,7 @@ impl App {
         }
 
         // Trajectory view in single-view mode
-        if self.show_trajectory && self.robot_kinematics.is_some() {
+        if self.show_trajectory && self.dataset.is_some() {
             ui.add_space(16.0);
             self.show_trajectory_panel(ui);
         }
@@ -538,7 +537,7 @@ impl App {
         }
 
         // Trajectory view below the cameras section
-        if self.show_trajectory && self.robot_kinematics.is_some() {
+        if self.show_trajectory && self.dataset.is_some() {
             ui.add_space(16.0);
             self.show_trajectory_panel(ui);
         }
@@ -1047,15 +1046,18 @@ impl App {
         );
         ui.separator();
 
+        if self.robot_kinematics.is_none() {
+            let robot_type = self.dataset.as_ref()
+                .and_then(|ds| ds.info.robot_type.clone());
+            self.show_urdf_missing_panel(ui, robot_type.as_deref());
+            return;
+        }
+
         let ds = match &self.dataset {
             Some(ds) => ds,
             None => return,
         };
-
-        let kin = match &self.robot_kinematics {
-            Some(k) => k,
-            None => return,
-        };
+        let kin = self.robot_kinematics.as_ref().unwrap();
 
         // Collect episode indices + frames to display
         let (pane_episodes, selected_episodes) = if let Some(grid) = &self.grid_view {
@@ -1161,6 +1163,62 @@ impl App {
             &mut self.orbit_camera,
             accent,
         );
+    }
+
+    fn show_urdf_missing_panel(&mut self, ui: &mut egui::Ui, robot_type_opt: Option<&str>) {
+        let robot_type = robot_type_opt.unwrap_or("unknown");
+        ui.label(
+            egui::RichText::new(format!("No URDF found for \"{}\"", robot_type))
+                .color(self.theme.muted),
+        );
+        ui.add_space(4.0);
+
+        ui.label(
+            egui::RichText::new(format!("Expected: {}.urdf", robot_type))
+                .monospace()
+                .small()
+                .color(self.theme.muted),
+        );
+        ui.label(
+            egui::RichText::new("Drop a .urdf file here to install it")
+                .small()
+                .color(self.theme.muted),
+        );
+        ui.add_space(4.0);
+
+        ui.horizontal(|ui| {
+            if ui.button("Open robots folder").clicked() {
+                if let Some(robots_dir) = crate::trajectory::robots_config_dir() {
+                    if let Err(e) = std::fs::create_dir_all(&robots_dir) {
+                        log::warn!("Failed to create robots dir: {}", e);
+                    }
+                    #[cfg(target_os = "linux")]
+                    let _ = std::process::Command::new("xdg-open").arg(&robots_dir).spawn();
+                    #[cfg(target_os = "macos")]
+                    let _ = std::process::Command::new("open").arg(&robots_dir).spawn();
+                    #[cfg(target_os = "windows")]
+                    let _ = std::process::Command::new("explorer").arg(&robots_dir).spawn();
+                }
+            }
+
+            if ui.button("Browse...").clicked() {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("URDF", &["urdf"])
+                    .pick_file()
+                {
+                    match crate::trajectory::install_urdf(&path, robot_type_opt) {
+                        Ok(dest) => {
+                            log::info!("URDF installed via browse: {}", dest.display());
+                            self.reload_kinematics_from(&dest);
+                        }
+                        Err(e) => {
+                            log::warn!("URDF install failed: {}", e);
+                            self.loading_error = Some(format!("Failed to install URDF: {}", e));
+                        }
+                    }
+                }
+            }
+        });
     }
 }
 
