@@ -206,7 +206,7 @@ For robots with multiple arms, place separate URDFs with the robot type as prefi
   openarm_follower_right.urdf
 ```
 
-The app auto-detects multiple URDFs via filename glob and derives arm names from the suffix ("left", "right"). A dropdown appears in the trajectory panel to switch between arms.
+The app auto-detects multiple URDFs via filename glob and derives arm names from the suffix ("left", "right"). A dropdown appears in the trajectory panel to switch between arms. Your arm selection is saved per dataset to `~/.config/tracelr/arm_preferences.json` and restored on next open.
 
 For explicit control (custom arm names, joint prefix filtering, EE frame overrides), create an optional `<robot_type>.toml`:
 
