@@ -1072,6 +1072,13 @@ impl App {
                 });
             if self.active_arm_index != prev_arm {
                 self.trajectory_cache = crate::trajectory::TrajectoryCache::new(100);
+                if let Some(ds) = &self.dataset {
+                    if let Some(arm) = self.arms.get(self.active_arm_index) {
+                        crate::trajectory::save_arm_preference(&ds.root, &arm.name);
+                        let canonical = ds.root.canonicalize().unwrap_or_else(|_| ds.root.clone());
+                        self.arm_preferences.insert(canonical, arm.name.clone());
+                    }
+                }
             }
             ui.add_space(4.0);
         }

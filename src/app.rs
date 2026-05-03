@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -96,6 +97,7 @@ pub struct App {
     // Trajectory visualization
     pub(crate) arms: Vec<ArmKinematics>,
     pub(crate) active_arm_index: usize,
+    pub(crate) arm_preferences: HashMap<PathBuf, String>,
     pub(crate) trajectory_cache: TrajectoryCache,
     pub(crate) orbit_camera: OrbitCamera,
     pub(crate) show_trajectory: bool,
@@ -158,6 +160,7 @@ impl App {
             scroll_to_selected: false,
             arms: Vec::new(),
             active_arm_index: 0,
+            arm_preferences: crate::trajectory::load_arm_preferences(),
             trajectory_cache: TrajectoryCache::new(100),
             orbit_camera: OrbitCamera::default(),
             show_trajectory: true,
@@ -226,10 +229,19 @@ impl App {
                 if self.arms.is_empty() {
                     log::info!("No URDF found for trajectory visualization");
                 } else {
-                    for arm in &self.arms {
+                    if let Some(saved_name) = crate::trajectory::lookup_arm_preference(&self.arm_preferences, path) {
+                        if let Some(idx) = self.arms.iter().position(|a| a.name == saved_name) {
+                            self.active_arm_index = idx;
+                            log::info!("Restored arm preference: '{}'", saved_name);
+                        }
+                    }
+                    for (i, arm) in self.arms.iter().enumerate() {
                         log::info!(
-                            "Arm '{}': DOF={}, pos_indices={:?}",
-                            arm.name, arm.kinematics.dof(), arm.pos_indices,
+                            "Arm '{}'{}: DOF={}, pos_indices={:?}",
+                            arm.name,
+                            if i == self.active_arm_index { " (active)" } else { "" },
+                            arm.kinematics.dof(),
+                            arm.pos_indices,
                         );
                     }
                 }

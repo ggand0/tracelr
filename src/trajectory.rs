@@ -316,6 +316,47 @@ pub(crate) fn robots_config_dir() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("tracelr").join("robots"))
 }
 
+fn arm_prefs_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|d| d.join("tracelr").join("arm_preferences.json"))
+}
+
+pub(crate) fn load_arm_preferences() -> HashMap<PathBuf, String> {
+    let path = match arm_prefs_path() {
+        Some(p) if p.is_file() => p,
+        _ => return HashMap::new(),
+    };
+    match std::fs::read_to_string(&path) {
+        Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+        Err(_) => HashMap::new(),
+    }
+}
+
+pub(crate) fn save_arm_preference(dataset_path: &Path, arm_name: &str) {
+    let prefs_path = match arm_prefs_path() {
+        Some(p) => p,
+        None => return,
+    };
+    let mut prefs = load_arm_preferences();
+    let canonical = dataset_path.canonicalize().unwrap_or_else(|_| dataset_path.to_path_buf());
+    prefs.insert(canonical, arm_name.to_string());
+    match serde_json::to_string_pretty(&prefs) {
+        Ok(json) => {
+            if let Some(parent) = prefs_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Err(e) = std::fs::write(&prefs_path, json) {
+                log::warn!("Failed to save arm preferences: {}", e);
+            }
+        }
+        Err(e) => log::warn!("Failed to serialize arm preferences: {}", e),
+    }
+}
+
+pub(crate) fn lookup_arm_preference(prefs: &HashMap<PathBuf, String>, dataset_path: &Path) -> Option<String> {
+    let canonical = dataset_path.canonicalize().unwrap_or_else(|_| dataset_path.to_path_buf());
+    prefs.get(&canonical).cloned()
+}
+
 pub(crate) fn install_urdf(source: &Path, robot_type: Option<&str>) -> Result<PathBuf, String> {
     let robots_dir = robots_config_dir()
         .ok_or_else(|| "Cannot determine config directory".to_string())?;
