@@ -77,7 +77,7 @@ impl App {
         }
 
         // T toggles trajectory panel
-        if t_pressed && self.robot_kinematics.is_some() {
+        if t_pressed && !self.arms.is_empty() {
             self.show_trajectory = !self.show_trajectory;
             return;
         }
@@ -227,7 +227,10 @@ impl App {
         });
 
         if let Some(path) = dropped.first() {
-            if dataset::is_lerobot_dataset(path) {
+            let is_urdf = path.extension().is_some_and(|ext| ext == "urdf");
+            if is_urdf {
+                self.handle_urdf_drop(path);
+            } else if dataset::is_lerobot_dataset(path) {
                 let was_grid = self.grid_view.is_some();
                 self.grid_view = None;
                 self.exit_video_mode();
@@ -245,6 +248,50 @@ impl App {
                     "Not a LeRobot dataset: {}\nExpected meta/info.json",
                     path.display()
                 ));
+            }
+        }
+    }
+
+    fn handle_urdf_drop(&mut self, path: &std::path::Path) {
+        let robot_type = self.dataset.as_ref().and_then(|ds| ds.info.robot_type.as_deref());
+        match crate::trajectory::install_urdf(path, robot_type) {
+            Ok(dest) => {
+                log::info!("URDF installed via drag-and-drop: {}", dest.display());
+                self.reload_kinematics_from(&dest);
+            }
+            Err(e) => {
+                log::warn!("URDF install failed: {}", e);
+                self.loading_error = Some(format!("Failed to install URDF: {}", e));
+            }
+        }
+    }
+
+    pub(crate) fn reload_kinematics_from(&mut self, urdf_path: &std::path::Path) {
+        let state_names = self.dataset.as_ref()
+            .map(|ds| ds.info.state_names.as_slice())
+            .unwrap_or(&[]);
+        match crate::trajectory::RobotKinematics::from_urdf(urdf_path, None) {
+            Ok(kin) => {
+                log::info!("Robot kinematics loaded: {} (DOF={})", urdf_path.display(), kin.dof());
+                let pos_indices = crate::trajectory::pos_indices_from_state_names(state_names);
+                let arm = crate::trajectory::ArmKinematics {
+                    name: "default".to_string(),
+                    kinematics: kin,
+                    pos_indices,
+                };
+                // If this is a new arm variant (e.g. right arm added to existing left), append
+                // Otherwise replace the single arm
+                if self.arms.is_empty() || self.arms.len() == 1 {
+                    self.arms = vec![arm];
+                    self.active_arm_index = 0;
+                } else {
+                    self.arms.push(arm);
+                }
+                self.trajectory_cache = crate::trajectory::TrajectoryCache::new(100);
+            }
+            Err(e) => {
+                log::warn!("Failed to load kinematics from {}: {}", urdf_path.display(), e);
+                self.loading_error = Some(format!("Failed to load URDF: {}", e));
             }
         }
     }

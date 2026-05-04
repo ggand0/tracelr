@@ -117,10 +117,9 @@ impl App {
                     }
 
                     ui.separator();
-                    if self.robot_kinematics.is_some()
-                        && ui
-                            .checkbox(&mut self.show_trajectory, "EE Trajectory")
-                            .changed()
+                    if ui
+                        .checkbox(&mut self.show_trajectory, "EE Trajectory")
+                        .changed()
                     {
                         ui.close_menu();
                     }
@@ -173,7 +172,7 @@ impl App {
                 let has_multi_cam = self.dataset.as_ref()
                     .map(|ds| ds.info.video_keys.len() > 1)
                     .unwrap_or(false);
-                let has_traj = self.robot_kinematics.is_some();
+                let has_traj = !self.arms.is_empty();
                 let is_tiled = in_grid && self.grid_view.as_ref()
                     .map(|g| g.cam_count > 1 && !g.subgrid).unwrap_or(false);
                 let is_subgrid = in_grid && self.grid_view.as_ref()
@@ -450,7 +449,7 @@ impl App {
         }
 
         // Trajectory view in single-view mode
-        if self.show_trajectory && self.robot_kinematics.is_some() {
+        if self.show_trajectory && self.dataset.is_some() {
             ui.add_space(16.0);
             self.show_trajectory_panel(ui);
         }
@@ -538,7 +537,7 @@ impl App {
         }
 
         // Trajectory view below the cameras section
-        if self.show_trajectory && self.robot_kinematics.is_some() {
+        if self.show_trajectory && self.dataset.is_some() {
             ui.add_space(16.0);
             self.show_trajectory_panel(ui);
         }
@@ -1047,15 +1046,51 @@ impl App {
         );
         ui.separator();
 
+        if self.arms.is_empty() {
+            let robot_type = self.dataset.as_ref()
+                .and_then(|ds| ds.info.robot_type.clone());
+            self.show_urdf_missing_panel(ui, robot_type.as_deref());
+            return;
+        }
+
+        // Arm selector (only shown when multiple arms are loaded)
+        if self.arms.len() > 1 {
+            let prev_arm = self.active_arm_index;
+            let current_name = self.arms.get(self.active_arm_index)
+                .map(|a| a.name.as_str())
+                .unwrap_or("default");
+            egui::ComboBox::from_id_salt("arm_select")
+                .selected_text(current_name)
+                .show_ui(ui, |ui| {
+                    for (i, arm) in self.arms.iter().enumerate() {
+                        ui.selectable_value(
+                            &mut self.active_arm_index,
+                            i,
+                            &arm.name,
+                        );
+                    }
+                });
+            if self.active_arm_index != prev_arm {
+                self.trajectory_cache = crate::trajectory::TrajectoryCache::new(100);
+                if let Some(ds) = &self.dataset {
+                    if let Some(arm) = self.arms.get(self.active_arm_index) {
+                        crate::trajectory::save_arm_preference(&ds.root, &arm.name);
+                        let canonical = ds.root.canonicalize().unwrap_or_else(|_| ds.root.clone());
+                        self.arm_preferences.insert(canonical, arm.name.clone());
+                    }
+                }
+            }
+            ui.add_space(4.0);
+        }
+
         let ds = match &self.dataset {
             Some(ds) => ds,
             None => return,
         };
 
-        let kin = match &self.robot_kinematics {
-            Some(k) => k,
-            None => return,
-        };
+        let arm_idx = self.active_arm_index.min(self.arms.len().saturating_sub(1));
+        let kin = &self.arms[arm_idx].kinematics;
+        let pos_indices = &self.arms[arm_idx].pos_indices;
 
         // Collect episode indices + frames to display
         let (pane_episodes, selected_episodes) = if let Some(grid) = &self.grid_view {
@@ -1098,7 +1133,7 @@ impl App {
             let filter_ep = if is_v3 { Some(ep_idx) } else { None };
             match trajectory::load_episode_states(&parquet_path, filter_ep) {
                 Ok(states) => {
-                    let traj = kin.compute_trajectory(&states, &self.state_pos_indices);
+                    let traj = kin.compute_trajectory(&states, pos_indices);
                     log::debug!(
                         "Computed trajectory for ep {}: {} points",
                         ep_idx,
@@ -1161,6 +1196,62 @@ impl App {
             &mut self.orbit_camera,
             accent,
         );
+    }
+
+    fn show_urdf_missing_panel(&mut self, ui: &mut egui::Ui, robot_type_opt: Option<&str>) {
+        let robot_type = robot_type_opt.unwrap_or("unknown");
+        ui.label(
+            egui::RichText::new(format!("No URDF found for \"{}\"", robot_type))
+                .color(self.theme.muted),
+        );
+        ui.add_space(4.0);
+
+        ui.label(
+            egui::RichText::new(format!("Expected: {}.urdf", robot_type))
+                .monospace()
+                .small()
+                .color(self.theme.muted),
+        );
+        ui.label(
+            egui::RichText::new("Drop a .urdf file here to install it")
+                .small()
+                .color(self.theme.muted),
+        );
+        ui.add_space(4.0);
+
+        ui.horizontal(|ui| {
+            if ui.button("Open robots folder").clicked() {
+                if let Some(robots_dir) = crate::trajectory::robots_config_dir() {
+                    if let Err(e) = std::fs::create_dir_all(&robots_dir) {
+                        log::warn!("Failed to create robots dir: {}", e);
+                    }
+                    #[cfg(target_os = "linux")]
+                    let _ = std::process::Command::new("xdg-open").arg(&robots_dir).spawn();
+                    #[cfg(target_os = "macos")]
+                    let _ = std::process::Command::new("open").arg(&robots_dir).spawn();
+                    #[cfg(target_os = "windows")]
+                    let _ = std::process::Command::new("explorer").arg(&robots_dir).spawn();
+                }
+            }
+
+            if ui.button("Browse...").clicked() {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("URDF", &["urdf"])
+                    .pick_file()
+                {
+                    match crate::trajectory::install_urdf(&path, robot_type_opt) {
+                        Ok(dest) => {
+                            log::info!("URDF installed via browse: {}", dest.display());
+                            self.reload_kinematics_from(&dest);
+                        }
+                        Err(e) => {
+                            log::warn!("URDF install failed: {}", e);
+                            self.loading_error = Some(format!("Failed to install URDF: {}", e));
+                        }
+                    }
+                }
+            }
+        });
     }
 }
 

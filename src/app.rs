@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -9,7 +10,7 @@ use crate::dataset::LeRobotDataset;
 use crate::grid::GridView;
 use crate::perf::PerfTracker;
 use crate::theme::UiTheme;
-use crate::trajectory::{RobotKinematics, TrajectoryCache};
+use crate::trajectory::{ArmKinematics, RobotKinematics, TrajectoryCache};
 use crate::trajectory_view::OrbitCamera;
 
 const CACHE_COUNT: usize = 5; // ±5 episodes = 11 total slots
@@ -94,12 +95,12 @@ pub struct App {
     pub(crate) scroll_to_selected: bool,
 
     // Trajectory visualization
-    pub(crate) robot_kinematics: Option<RobotKinematics>,
+    pub(crate) arms: Vec<ArmKinematics>,
+    pub(crate) active_arm_index: usize,
+    pub(crate) arm_preferences: HashMap<PathBuf, String>,
     pub(crate) trajectory_cache: TrajectoryCache,
     pub(crate) orbit_camera: OrbitCamera,
     pub(crate) show_trajectory: bool,
-    /// Indices into observation.state that are joint positions (for FK).
-    pub(crate) state_pos_indices: Vec<usize>,
     /// CLI override for URDF path.
     pub(crate) urdf_override: Option<PathBuf>,
 
@@ -157,11 +158,12 @@ impl App {
             camera_display: CameraDisplay::SingleCamera,
             label_mode: LabelMode::Compact,
             scroll_to_selected: false,
-            robot_kinematics: None,
+            arms: Vec::new(),
+            active_arm_index: 0,
+            arm_preferences: crate::trajectory::load_arm_preferences(),
             trajectory_cache: TrajectoryCache::new(100),
             orbit_camera: OrbitCamera::default(),
             show_trajectory: true,
-            state_pos_indices: Vec::new(),
             urdf_override,
             pending_camera_switch: None,
             pending_multi_camera_rebuild: false,
@@ -198,29 +200,50 @@ impl App {
                 self.current_video_key_index = wrist_idx;
 
                 // Try to load robot kinematics for EE trajectory visualization
-                self.robot_kinematics = None;
                 self.trajectory_cache = TrajectoryCache::new(100);
-                self.state_pos_indices = crate::trajectory::pos_indices_from_state_names(&ds.info.state_names);
-                log::info!("State pos indices: {:?} (from {} state names)", self.state_pos_indices, ds.info.state_names.len());
+                self.active_arm_index = 0;
 
-                let urdf_path = self.urdf_override.clone()
-                    .filter(|p| p.is_file())
-                    .or_else(|| crate::trajectory::discover_urdf(
-                        path,
-                        ds.info.robot_type.as_deref(),
-                    ));
-                if let Some(urdf_path) = urdf_path {
+                if let Some(urdf_path) = self.urdf_override.clone().filter(|p| p.is_file()) {
                     match RobotKinematics::from_urdf(&urdf_path, None) {
                         Ok(kin) => {
-                            log::info!("Robot kinematics loaded: {} (DOF={})", urdf_path.display(), kin.dof());
-                            self.robot_kinematics = Some(kin);
+                            let pos_indices = crate::trajectory::pos_indices_from_state_names(&ds.info.state_names);
+                            self.arms = vec![ArmKinematics {
+                                name: "default".to_string(),
+                                kinematics: kin,
+                                pos_indices,
+                            }];
                         }
                         Err(e) => {
                             log::warn!("Failed to load kinematics: {}", e);
+                            self.arms = Vec::new();
                         }
                     }
                 } else {
+                    self.arms = crate::trajectory::discover_arms(
+                        path,
+                        ds.info.robot_type.as_deref(),
+                        &ds.info.state_names,
+                    );
+                }
+
+                if self.arms.is_empty() {
                     log::info!("No URDF found for trajectory visualization");
+                } else {
+                    if let Some(saved_name) = crate::trajectory::lookup_arm_preference(&self.arm_preferences, path) {
+                        if let Some(idx) = self.arms.iter().position(|a| a.name == saved_name) {
+                            self.active_arm_index = idx;
+                            log::info!("Restored arm preference: '{}'", saved_name);
+                        }
+                    }
+                    for (i, arm) in self.arms.iter().enumerate() {
+                        log::info!(
+                            "Arm '{}'{}: DOF={}, pos_indices={:?}",
+                            arm.name,
+                            if i == self.active_arm_index { " (active)" } else { "" },
+                            arm.kinematics.dof(),
+                            arm.pos_indices,
+                        );
+                    }
                 }
 
                 self.selected_cameras = vec![true; ds.info.video_keys.len()];
