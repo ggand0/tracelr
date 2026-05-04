@@ -45,6 +45,17 @@ impl App {
                     }
                 });
 
+                ui.menu_button("Edit", |ui| {
+                    let has_dataset = self.dataset.is_some();
+                    let mut annotate = self.annotate_mode;
+                    if ui.add_enabled(has_dataset, egui::Checkbox::new(&mut annotate, "Annotation Mode")).changed() {
+                        self.annotate_mode = annotate;
+                        if annotate {
+                            self.enable_annotation_mode();
+                        }
+                    }
+                });
+
                 ui.menu_button("View", |ui| {
                     let in_grid = self.grid_view.is_some();
                     let has_multi_cam = self.dataset.as_ref()

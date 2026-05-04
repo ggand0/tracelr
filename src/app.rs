@@ -272,6 +272,19 @@ impl App {
         }
     }
 
+    pub(crate) fn enable_annotation_mode(&mut self) {
+        if let Some(ds) = &self.dataset {
+            let root = ds.root.clone();
+            self.annotations = AnnotationState::load_prompts(Some(&root));
+            let annot_path = root.join("annotations.json");
+            if annot_path.exists() {
+                if let Err(e) = self.annotations.load_json(&annot_path) {
+                    log::warn!("Failed to load annotations: {}", e);
+                }
+            }
+        }
+    }
+
     pub(crate) fn save_annotations(&mut self) {
         if let Some(ds) = &self.dataset {
             let path = ds.root.join("annotations.json");
