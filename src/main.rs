@@ -22,6 +22,7 @@ mod annotation;
 mod app;
 mod build_info;
 mod cache;
+mod curation;
 mod dataset;
 mod grid;
 mod perf;

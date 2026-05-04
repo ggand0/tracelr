@@ -39,6 +39,12 @@ impl App {
                             }
                         }
                     }
+                    if self.curation_mode {
+                        if ui.button("Save Curation  Ctrl+S").clicked() {
+                            ui.close_menu();
+                            self.save_curation();
+                        }
+                    }
                     ui.separator();
                     if ui.button("Quit").clicked() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -52,6 +58,13 @@ impl App {
                         self.annotate_mode = annotate;
                         if annotate {
                             self.enable_annotation_mode();
+                        }
+                    }
+                    let mut curate = self.curation_mode;
+                    if ui.add_enabled(has_dataset, egui::Checkbox::new(&mut curate, "Curation Mode")).changed() {
+                        self.curation_mode = curate;
+                        if curate {
+                            self.enable_curation_mode();
                         }
                     }
                 });
@@ -307,6 +320,17 @@ impl App {
                     None
                 };
 
+                let curation_labels: Vec<egui::Color32> = if self.curation_mode {
+                    self.curation
+                        .episode_labels(episode_index)
+                        .map(|names| {
+                            names.iter().map(|n| self.curation.color_for_label(n)).collect()
+                        })
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+
                 let response = ui.horizontal(|ui| {
                     if self.annotate_mode {
                         if let Some((_, color)) = &annot_info {
@@ -314,6 +338,17 @@ impl App {
                                 ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
                             ui.painter().circle_filled(rect.center(), 4.0, *color);
                         } else {
+                            ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                        }
+                    }
+
+                    if self.curation_mode {
+                        for color in &curation_labels {
+                            let (rect, _) =
+                                ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                            ui.painter().circle_filled(rect.center(), 4.0, *color);
+                        }
+                        if curation_labels.is_empty() {
                             ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
                         }
                     }
@@ -457,6 +492,11 @@ impl App {
         if self.annotate_mode {
             ui.add_space(16.0);
             self.show_annotation_panel(ui);
+        }
+
+        if self.curation_mode {
+            ui.add_space(16.0);
+            self.show_curation_panel(ui);
         }
 
         // Trajectory view in single-view mode
@@ -617,6 +657,95 @@ impl App {
             ui.add_space(4.0);
             ui.label(egui::RichText::new(path).color(self.theme.muted).small());
         }
+    }
+
+    fn show_curation_panel(&mut self, ui: &mut egui::Ui) {
+        ui.label(
+            egui::RichText::new("Curation")
+                .strong()
+                .color(self.theme.heading),
+        );
+        ui.separator();
+
+        let episode = self.current_episode;
+        let episode_labels: Vec<String> = self
+            .curation
+            .episode_labels(episode)
+            .map(|s| s.iter().cloned().collect())
+            .unwrap_or_default();
+
+        let label_data: Vec<(usize, String, egui::Color32, usize, bool)> = self
+            .curation
+            .labels
+            .iter()
+            .enumerate()
+            .map(|(i, l)| {
+                let count = self.curation.label_count(i);
+                let active = self.curation.active_label == Some(i);
+                (i, l.name.clone(), l.color, count, active)
+            })
+            .collect();
+
+        for (i, name, color, count, active) in &label_data {
+            let has_label = episode_labels.contains(name);
+            let shortcut = if *i < 9 {
+                format!("[{}] ", i + 1)
+            } else {
+                String::new()
+            };
+
+            let response = ui.horizontal(|ui| {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                ui.painter().circle_filled(rect.center(), 6.0, *color);
+
+                let text = format!("{}{} ({})", shortcut, name, count);
+                let rich = if *active {
+                    egui::RichText::new(text).strong().color(*color)
+                } else if has_label {
+                    egui::RichText::new(text).color(*color)
+                } else {
+                    egui::RichText::new(text)
+                };
+                ui.selectable_label(*active, rich)
+            });
+
+            if response.inner.clicked() {
+                if self.curation.active_label == Some(*i) {
+                    self.curation.active_label = None;
+                } else {
+                    self.curation.active_label = Some(*i);
+                }
+            }
+        }
+
+        ui.add_space(8.0);
+        let response = ui.add(
+            egui::TextEdit::singleline(&mut self.curation.new_label_buf)
+                .hint_text("New label...")
+                .desired_width(120.0),
+        );
+        if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            let trimmed = self.curation.new_label_buf.trim().to_string();
+            if !trimmed.is_empty() {
+                self.curation.add_label(trimmed);
+                self.curation.new_label_buf.clear();
+            }
+        }
+
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            if ui.button("Save (Ctrl+S)").clicked() {
+                self.save_curation();
+            }
+            if self.curation.dirty {
+                ui.label(
+                    egui::RichText::new("unsaved")
+                        .color(egui::Color32::from_rgb(255, 200, 60))
+                        .small(),
+                );
+            }
+        });
     }
 
     pub(crate) fn show_frame_display(&self, ui: &mut egui::Ui) {
@@ -910,8 +1039,43 @@ impl App {
 
     pub(crate) fn show_grid_display(&mut self, ui: &mut egui::Ui) {
         let accent = self.theme.accent;
-        if let Some(grid) = &mut self.grid_view {
-            grid.show(ui, accent, self.label_mode);
+        let clicked = if let Some(grid) = &mut self.grid_view {
+            grid.show(ui, accent, self.label_mode)
+        } else {
+            None
+        };
+        if let Some(ep) = clicked {
+            if self.curation_mode {
+                if let Some(label_idx) = self.curation.active_label {
+                    self.curation.toggle_label(ep, label_idx);
+                }
+            }
+        }
+        if self.curation_mode {
+            self.draw_curation_dots(ui);
+        }
+    }
+
+    fn draw_curation_dots(&self, ui: &mut egui::Ui) {
+        let Some(grid) = &self.grid_view else { return };
+        let painter = ui.painter();
+        let dot_radius = 4.0_f32;
+        let dot_spacing = 10.0_f32;
+
+        for &(ep, rect) in &grid.last_pane_rects {
+            let Some(labels) = self.curation.episode_labels(ep) else {
+                continue;
+            };
+            if labels.is_empty() {
+                continue;
+            }
+            let start_x = rect.right() - 8.0;
+            let start_y = rect.top() + 8.0;
+            for (i, name) in labels.iter().enumerate() {
+                let color = self.curation.color_for_label(name);
+                let center = egui::pos2(start_x - i as f32 * dot_spacing, start_y);
+                painter.circle_filled(center, dot_radius, color);
+            }
         }
     }
 
