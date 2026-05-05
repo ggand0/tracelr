@@ -672,12 +672,15 @@ impl App {
         );
         ui.separator();
 
-        let episode = self.current_episode;
-        let episode_labels: Vec<String> = self
-            .curation
-            .episode_labels(episode)
-            .map(|s| s.iter().cloned().collect())
-            .unwrap_or_default();
+        let targets = self.curation_target_episodes();
+        let episode_labels: Vec<String> = if let Some(&ep) = targets.first() {
+            self.curation
+                .episode_labels(ep)
+                .map(|s| s.iter().cloned().collect())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
 
         let label_data: Vec<(usize, String, egui::Color32, usize, bool)> = self
             .curation
@@ -716,10 +719,10 @@ impl App {
             });
 
             if response.inner.clicked() {
-                if self.curation.active_label == Some(*i) {
-                    self.curation.active_label = None;
-                } else {
-                    self.curation.active_label = Some(*i);
+                self.curation.active_label = Some(*i);
+                let episodes = self.curation_target_episodes();
+                for ep in episodes {
+                    self.curation.toggle_label(ep, *i);
                 }
             }
         }
@@ -1044,8 +1047,9 @@ impl App {
 
     pub(crate) fn show_grid_display(&mut self, ui: &mut egui::Ui) {
         let accent = self.theme.accent;
+        let curation = self.curation_mode;
         let clicked = if let Some(grid) = &mut self.grid_view {
-            grid.show(ui, accent, self.label_mode)
+            grid.show(ui, accent, self.label_mode, curation)
         } else {
             None
         };

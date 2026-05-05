@@ -543,17 +543,33 @@ impl GridView {
     }
 
     /// Render the grid into the given UI area.
-    pub fn show(&mut self, ui: &mut egui::Ui, theme_accent: egui::Color32, label_mode: crate::app::LabelMode) -> Option<usize> {
-        if self.subgrid {
-            self.show_subgrid(ui, theme_accent, label_mode)
+    pub fn show(&mut self, ui: &mut egui::Ui, theme_accent: egui::Color32, label_mode: crate::app::LabelMode, curation_select: bool) -> Option<usize> {
+        let clicked = if self.subgrid {
+            self.show_subgrid(ui, theme_accent, label_mode, curation_select)
         } else {
-            self.show_flat(ui, theme_accent, label_mode)
+            self.show_flat(ui, theme_accent, label_mode, curation_select)
+        };
+        if curation_select {
+            if let Some(ep) = clicked {
+                let shift = ui.input(|i| i.modifiers.shift);
+                if !shift {
+                    self.selected_panes.clear();
+                }
+                let matching: Vec<usize> = self.panes.iter().enumerate()
+                    .filter(|(_, p)| p.episode_index == ep)
+                    .map(|(i, _)| i)
+                    .collect();
+                for i in matching {
+                    self.selected_panes.insert(i);
+                }
+            }
         }
+        clicked
     }
 
     /// Flat rendering: each pane is its own cell in the grid.
     /// Returns the clicked episode index if any pane was clicked.
-    fn show_flat(&mut self, ui: &mut egui::Ui, theme_accent: egui::Color32, label_mode: crate::app::LabelMode) -> Option<usize> {
+    fn show_flat(&mut self, ui: &mut egui::Ui, theme_accent: egui::Color32, label_mode: crate::app::LabelMode, curation_select: bool) -> Option<usize> {
         let available = ui.available_size();
         let cols = self.cols;
         let rows = self.rows;
@@ -628,15 +644,17 @@ impl GridView {
             .map(|(i, p)| (p.episode_index, pane_rects[i]))
             .collect();
 
-        if let Some(ep) = clicked_episode {
-            self.toggle_episode_selection(ep);
+        if !curation_select {
+            if let Some(ep) = clicked_episode {
+                self.toggle_episode_selection(ep);
+            }
         }
         clicked_episode
     }
 
     /// Subgrid rendering: each episode cell contains cam_count sub-panes.
     /// Returns the clicked episode index if any cell was clicked.
-    fn show_subgrid(&mut self, ui: &mut egui::Ui, theme_accent: egui::Color32, label_mode: crate::app::LabelMode) -> Option<usize> {
+    fn show_subgrid(&mut self, ui: &mut egui::Ui, theme_accent: egui::Color32, label_mode: crate::app::LabelMode, curation_select: bool) -> Option<usize> {
         let available = ui.available_size();
         let cols = self.cols;
         let rows = self.rows;
@@ -721,8 +739,10 @@ impl GridView {
 
         self.last_pane_rects = cell_rects;
 
-        if let Some(ep) = clicked_episode {
-            self.toggle_episode_selection(ep);
+        if !curation_select {
+            if let Some(ep) = clicked_episode {
+                self.toggle_episode_selection(ep);
+            }
         }
         clicked_episode
     }
