@@ -587,6 +587,11 @@ impl App {
             ui.label(name);
         }
 
+        if self.curation_mode {
+            ui.add_space(16.0);
+            self.show_curation_panel(ui);
+        }
+
         // Trajectory view below the cameras section
         if self.show_trajectory && self.dataset.is_some() {
             ui.add_space(16.0);

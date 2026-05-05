@@ -12,6 +12,10 @@ impl App {
             return;
         }
 
+        if ctx.memory(|m| m.focused().is_some()) {
+            return;
+        }
+
         let mut g_pressed = false;
         let mut t_pressed = false;
         let mut c_pressed = false;
@@ -76,7 +80,10 @@ impl App {
                     (egui::Key::Num9, 8),
                 ] {
                     if i.key_pressed(key) && idx < self.curation.labels.len() {
-                        self.curation.toggle_label(self.current_episode, idx);
+                        let episodes = self.curation_target_episodes();
+                        for ep in episodes {
+                            self.curation.toggle_label(ep, idx);
+                        }
                     }
                 }
 

@@ -301,6 +301,16 @@ impl App {
         }
     }
 
+    pub(crate) fn curation_target_episodes(&self) -> Vec<usize> {
+        if let Some(grid) = &self.grid_view {
+            let selected = grid.selected_episodes();
+            if !selected.is_empty() {
+                return selected.into_iter().collect();
+            }
+        }
+        vec![self.current_episode]
+    }
+
     pub(crate) fn save_curation(&mut self) {
         if let Some(ds) = &self.dataset {
             if let Err(e) = self.curation.save(&ds.root) {
