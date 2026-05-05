@@ -1053,13 +1053,7 @@ impl App {
         } else {
             None
         };
-        if let Some(ep) = clicked {
-            if self.curation_mode {
-                if let Some(label_idx) = self.curation.active_label {
-                    self.curation.toggle_label(ep, label_idx);
-                }
-            }
-        }
+        let _ = clicked;
         if self.curation_mode {
             self.draw_curation_dots(ui);
         }
