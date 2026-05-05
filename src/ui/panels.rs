@@ -724,6 +724,7 @@ impl App {
                 for ep in episodes {
                     self.curation.toggle_label(ep, *i);
                 }
+                self.save_curation();
             }
         }
 
@@ -738,6 +739,7 @@ impl App {
             if !trimmed.is_empty() {
                 self.curation.add_label(trimmed);
                 self.curation.new_label_buf.clear();
+                self.save_curation();
             }
         }
 

@@ -68,6 +68,7 @@ impl App {
             }
 
             if self.curation_mode {
+                let mut curation_changed = false;
                 for (key, idx) in [
                     (egui::Key::Num1, 0),
                     (egui::Key::Num2, 1),
@@ -84,10 +85,11 @@ impl App {
                         for ep in episodes {
                             self.curation.toggle_label(ep, idx);
                         }
+                        curation_changed = true;
                     }
                 }
 
-                if i.modifiers.command && i.key_pressed(egui::Key::S) {
+                if curation_changed || (i.modifiers.command && i.key_pressed(egui::Key::S)) {
                     self.save_curation();
                 }
             }
