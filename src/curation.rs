@@ -91,7 +91,7 @@ impl CurationState {
                 .collect(),
         };
         let json = serde_json::to_string_pretty(&file)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            .map_err(std::io::Error::other)?;
         let path = dataset_root.join("curation.json");
         fs::write(&path, json)?;
         self.dirty = false;

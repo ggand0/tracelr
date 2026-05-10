@@ -39,11 +39,9 @@ impl App {
                             }
                         }
                     }
-                    if self.curation_mode {
-                        if ui.button("Save Curation  Ctrl+S").clicked() {
-                            ui.close_menu();
-                            self.save_curation();
-                        }
+                    if self.curation_mode && ui.button("Save Curation  Ctrl+S").clicked() {
+                        ui.close_menu();
+                        self.save_curation();
                     }
                     ui.separator();
                     if ui.button("Quit").clicked() {
@@ -1050,12 +1048,9 @@ impl App {
     pub(crate) fn show_grid_display(&mut self, ui: &mut egui::Ui) {
         let accent = self.theme.accent;
         let curation = self.curation_mode;
-        let clicked = if let Some(grid) = &mut self.grid_view {
-            grid.show(ui, accent, self.label_mode, curation)
-        } else {
-            None
-        };
-        let _ = clicked;
+        if let Some(grid) = &mut self.grid_view {
+            grid.show(ui, accent, self.label_mode, curation);
+        }
         if self.curation_mode {
             self.draw_curation_dots(ui);
         }
