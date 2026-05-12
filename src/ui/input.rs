@@ -12,6 +12,10 @@ impl App {
             return;
         }
 
+        if ctx.memory(|m| m.focused().is_some()) {
+            return;
+        }
+
         let mut g_pressed = false;
         let mut t_pressed = false;
         let mut c_pressed = false;
@@ -60,6 +64,33 @@ impl App {
 
                 if i.modifiers.command && i.key_pressed(egui::Key::S) {
                     self.save_annotations();
+                }
+            }
+
+            if self.curation_mode {
+                let mut curation_changed = false;
+                for (key, idx) in [
+                    (egui::Key::Num1, 0),
+                    (egui::Key::Num2, 1),
+                    (egui::Key::Num3, 2),
+                    (egui::Key::Num4, 3),
+                    (egui::Key::Num5, 4),
+                    (egui::Key::Num6, 5),
+                    (egui::Key::Num7, 6),
+                    (egui::Key::Num8, 7),
+                    (egui::Key::Num9, 8),
+                ] {
+                    if i.key_pressed(key) && idx < self.curation.labels.len() {
+                        let episodes = self.curation_target_episodes();
+                        for ep in episodes {
+                            self.curation.toggle_label(ep, idx);
+                        }
+                        curation_changed = true;
+                    }
+                }
+
+                if curation_changed || (i.modifiers.command && i.key_pressed(egui::Key::S)) {
+                    self.save_curation();
                 }
             }
         });

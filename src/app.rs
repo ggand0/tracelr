@@ -6,6 +6,7 @@ use eframe::egui;
 
 use crate::annotation::AnnotationState;
 use crate::cache::{DecodeLruCache, EpisodeCache, SliderLoader, VideoPlayer};
+use crate::curation::CurationState;
 use crate::dataset::LeRobotDataset;
 use crate::grid::GridView;
 use crate::perf::PerfTracker;
@@ -106,6 +107,8 @@ pub struct App {
 
     // Mode
     pub(crate) annotate_mode: bool,
+    pub(crate) curation_mode: bool,
+    pub(crate) curation: CurationState,
 
     // Pending actions from UI panels (applied in update loop where ctx is available)
     pub(crate) pending_camera_switch: Option<usize>,
@@ -168,6 +171,8 @@ impl App {
             pending_camera_switch: None,
             pending_multi_camera_rebuild: false,
             annotate_mode: annotate,
+            curation_mode: false,
+            curation: CurationState::new(),
             theme: UiTheme::teal_dark(),
             perf: PerfTracker::new(),
             initial_size_set: false,
@@ -264,6 +269,9 @@ impl App {
                         }
                     }
                 }
+                if self.curation_mode {
+                    self.curation = CurationState::load(path);
+                }
             }
             Err(e) => {
                 log::error!("Failed to load dataset: {}", e);
@@ -273,6 +281,7 @@ impl App {
     }
 
     pub(crate) fn enable_annotation_mode(&mut self) {
+        self.curation_mode = false;
         if let Some(ds) = &self.dataset {
             let root = ds.root.clone();
             self.annotations = AnnotationState::load_prompts(Some(&root));
@@ -281,6 +290,31 @@ impl App {
                 if let Err(e) = self.annotations.load_json(&annot_path) {
                     log::warn!("Failed to load annotations: {}", e);
                 }
+            }
+        }
+    }
+
+    pub(crate) fn enable_curation_mode(&mut self) {
+        self.annotate_mode = false;
+        if let Some(ds) = &self.dataset {
+            self.curation = CurationState::load(&ds.root);
+        }
+    }
+
+    pub(crate) fn curation_target_episodes(&self) -> Vec<usize> {
+        if let Some(grid) = &self.grid_view {
+            let selected = grid.selected_episodes();
+            if !selected.is_empty() {
+                return selected.into_iter().collect();
+            }
+        }
+        vec![self.current_episode]
+    }
+
+    pub(crate) fn save_curation(&mut self) {
+        if let Some(ds) = &self.dataset {
+            if let Err(e) = self.curation.save(&ds.root) {
+                log::error!("Failed to save curation: {}", e);
             }
         }
     }
@@ -313,6 +347,9 @@ impl App {
             if self.annotate_mode {
                 let (done, total) = self.annotations.progress(ds.episodes.len());
                 format!("tracelr - {} [{}/{}]", dir_name, done, total)
+            } else if self.curation_mode {
+                let tagged = self.curation.episodes.values().filter(|s| !s.is_empty()).count();
+                format!("tracelr - {} [curate: {}/{}]", dir_name, tagged, ds.episodes.len())
             } else {
                 format!("tracelr - {} ({} episodes)", dir_name, ds.episodes.len())
             }
