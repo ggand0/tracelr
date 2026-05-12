@@ -155,7 +155,7 @@ impl GridView {
                     fps: ds.info.fps,
                     selected_panes: HashSet::new(),
                     frame_slider_dragging: false,
-            last_pane_rects: Vec::new(),
+                    last_pane_rects: Vec::new(),
                 };
             }
         };
