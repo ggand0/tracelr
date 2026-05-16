@@ -159,6 +159,7 @@ impl LeRobotDataset {
 
         // Parse tasks — v3.0 uses tasks.parquet, v2.1 uses tasks.jsonl
         let tasks_jsonl = meta_dir.join("tasks.jsonl");
+        let tasks_parquet = meta_dir.join("tasks.parquet");
         let tasks = if tasks_jsonl.exists() {
             let text = fs::read_to_string(&tasks_jsonl)
                 .map_err(|e| format!("Failed to read tasks.jsonl: {}", e))?;
@@ -173,6 +174,8 @@ impl LeRobotDataset {
                     })
                 })
                 .collect::<Result<Vec<_>, String>>()?
+        } else if tasks_parquet.exists() {
+            load_tasks_parquet(&tasks_parquet)?
         } else {
             vec![]
         };
@@ -435,6 +438,38 @@ fn load_episodes_v3(
 
     episodes.sort_by_key(|e| e.episode_index);
     Ok(episodes)
+}
+
+/// Load tasks from a v3.0 tasks.parquet file.
+fn load_tasks_parquet(path: &Path) -> Result<Vec<TaskMeta>, String> {
+    use parquet::file::reader::{FileReader, SerializedFileReader};
+
+    let file = fs::File::open(path)
+        .map_err(|e| format!("Open {}: {}", path.display(), e))?;
+    let reader = SerializedFileReader::new(file)
+        .map_err(|e| format!("Read tasks parquet: {}", e))?;
+
+    let mut tasks = Vec::new();
+    for row in reader.get_row_iter(None).map_err(|e| format!("Row iter: {}", e))? {
+        let row = row.map_err(|e| format!("Read row: {}", e))?;
+        let mut task_index = 0usize;
+        let mut task = String::new();
+
+        for (name, field) in row.get_column_iter() {
+            if name == "task_index" {
+                if let parquet::record::Field::Long(v) = field {
+                    task_index = *v as usize;
+                }
+            } else if let parquet::record::Field::Str(v) = field {
+                task = v.clone();
+            }
+        }
+
+        tasks.push(TaskMeta { task_index, task });
+    }
+
+    tasks.sort_by_key(|t| t.task_index);
+    Ok(tasks)
 }
 
 /// Check if a directory looks like a LeRobot dataset (has meta/info.json).
