@@ -352,6 +352,7 @@ fn load_episodes_v3(
             let mut length = 0usize;
             let mut data_chunk_index = 0usize;
             let mut data_file_index = 0usize;
+            let mut tasks: Vec<String> = Vec::new();
             let mut video_mapping = HashMap::new();
 
             for (name, field) in row.get_column_iter() {
@@ -364,6 +365,21 @@ fn load_episodes_v3(
                     "length" => {
                         if let parquet::record::Field::Long(v) = field {
                             length = *v as usize;
+                        }
+                    }
+                    "tasks" => {
+                        if let parquet::record::Field::ListInternal(list) = field {
+                            for elem in list.elements() {
+                                if let parquet::record::Field::Str(s) = elem {
+                                    tasks.push(s.clone());
+                                }
+                            }
+                        }
+                    }
+                    "task_index" => {
+                        if let parquet::record::Field::Long(v) = field {
+                            // Will resolve to task string after loading tasks list
+                            tasks.push(format!("__task_idx:{}", v));
                         }
                     }
                     "data/chunk_index" => {
@@ -427,7 +443,7 @@ fn load_episodes_v3(
 
             episodes.push(EpisodeMeta {
                 episode_index: ep_index,
-                tasks: vec![],
+                tasks,
                 length,
                 video_mapping,
                 data_chunk_index,
