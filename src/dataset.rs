@@ -30,6 +30,7 @@ pub(crate) struct DatasetInfo {
 #[derive(Debug, Clone)]
 pub(crate) struct EpisodeMeta {
     pub episode_index: usize,
+    pub task_index: Option<usize>,
     pub tasks: Vec<String>,
     pub length: usize,
     /// v3.0: per-video-key mapping to chunk/file index and timestamp range.
@@ -180,6 +181,20 @@ impl LeRobotDataset {
             vec![]
         };
 
+        // Resolve task_index -> task string for episodes that have an index but no task strings
+        let mut episodes = episodes;
+        if !tasks.is_empty() {
+            for ep in &mut episodes {
+                if ep.tasks.is_empty() {
+                    if let Some(idx) = ep.task_index {
+                        if let Some(tm) = tasks.iter().find(|t| t.task_index == idx) {
+                            ep.tasks.push(tm.task.clone());
+                        }
+                    }
+                }
+            }
+        }
+
         log::info!(
             "Loaded {} dataset: {} episodes, {} tasks, {} video keys, {}fps",
             codebase_version,
@@ -267,6 +282,7 @@ fn load_episodes_v2(meta_dir: &Path, total_episodes: usize) -> Result<Vec<Episod
                     .map_err(|e| format!("Failed to parse episode line: {}", e))?;
                 Ok(EpisodeMeta {
                     episode_index: raw.episode_index,
+                    task_index: None,
                     tasks: raw.tasks,
                     length: raw.length,
                     video_mapping: HashMap::new(),
@@ -279,6 +295,7 @@ fn load_episodes_v2(meta_dir: &Path, total_episodes: usize) -> Result<Vec<Episod
         Ok((0..total_episodes)
             .map(|i| EpisodeMeta {
                 episode_index: i,
+                task_index: None,
                 tasks: vec![],
                 length: 0,
                 video_mapping: HashMap::new(),
@@ -305,6 +322,7 @@ fn load_episodes_v3(
         return Ok((0..total_episodes)
             .map(|i| EpisodeMeta {
                 episode_index: i,
+                task_index: None,
                 tasks: vec![],
                 length: 0,
                 video_mapping: HashMap::new(),
@@ -352,6 +370,7 @@ fn load_episodes_v3(
             let mut length = 0usize;
             let mut data_chunk_index = 0usize;
             let mut data_file_index = 0usize;
+            let mut task_index: Option<usize> = None;
             let mut tasks: Vec<String> = Vec::new();
             let mut video_mapping = HashMap::new();
 
@@ -378,8 +397,7 @@ fn load_episodes_v3(
                     }
                     "task_index" => {
                         if let parquet::record::Field::Long(v) = field {
-                            // Will resolve to task string after loading tasks list
-                            tasks.push(format!("__task_idx:{}", v));
+                            task_index = Some(*v as usize);
                         }
                     }
                     "data/chunk_index" => {
@@ -443,6 +461,7 @@ fn load_episodes_v3(
 
             episodes.push(EpisodeMeta {
                 episode_index: ep_index,
+                task_index,
                 tasks,
                 length,
                 video_mapping,

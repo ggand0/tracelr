@@ -435,17 +435,7 @@ impl App {
             } else {
                 None
             };
-            let task_strings: Vec<String> = ep.tasks.iter().map(|t| {
-                if let Some(idx_str) = t.strip_prefix("__task_idx:") {
-                    if let Ok(idx) = idx_str.parse::<usize>() {
-                        return ds.tasks.iter()
-                            .find(|tm| tm.task_index == idx)
-                            .map(|tm| tm.task.clone())
-                            .unwrap_or_else(|| format!("task #{}", idx));
-                    }
-                }
-                t.clone()
-            }).collect();
+            let task_strings: Vec<String> = ep.tasks.clone();
             Some((
                 ep.episode_index,
                 total_eps,
