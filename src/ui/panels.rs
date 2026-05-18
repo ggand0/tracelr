@@ -435,6 +435,7 @@ impl App {
             } else {
                 None
             };
+            let task_strings: Vec<String> = ep.tasks.clone();
             Some((
                 ep.episode_index,
                 total_eps,
@@ -442,7 +443,7 @@ impl App {
                 fps,
                 cam_count,
                 single_cam_name,
-                ep.tasks.first().cloned(),
+                task_strings,
             ))
         });
 
@@ -453,7 +454,7 @@ impl App {
         );
         ui.separator();
 
-        if let Some((ep_idx, total_eps, ep_length, fps, cam_count, single_cam_name, task)) = snapshot {
+        if let Some((ep_idx, total_eps, ep_length, fps, cam_count, single_cam_name, task_strings)) = snapshot {
             let info_rows: [(&str, String); 4] = [
                 ("Episode:", format!("{} / {}", ep_idx, total_eps)),
                 ("Frames:", format!("{}", ep_length)),
@@ -479,11 +480,13 @@ impl App {
                 });
             }
 
-            if let Some(task) = task {
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Task:").color(self.theme.muted));
-                    ui.label(task);
-                });
+            if !task_strings.is_empty() {
+                for task_str in &task_strings {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(egui::RichText::new("Task:").color(self.theme.muted));
+                        render_task_with_colors(ui, task_str);
+                    });
+                }
             }
         }
 
@@ -1495,5 +1498,45 @@ fn grid_size_picker(
         Some((hover_col, hover_row))
     } else {
         None
+    }
+}
+
+fn color_for_word(word: &str) -> Option<egui::Color32> {
+    match word.to_lowercase().as_str() {
+        "red" => Some(egui::Color32::from_rgb(220, 60, 60)),
+        "green" => Some(egui::Color32::from_rgb(60, 200, 60)),
+        "blue" => Some(egui::Color32::from_rgb(80, 130, 255)),
+        "yellow" => Some(egui::Color32::from_rgb(240, 220, 40)),
+        "orange" => Some(egui::Color32::from_rgb(240, 150, 30)),
+        "purple" | "violet" => Some(egui::Color32::from_rgb(180, 80, 220)),
+        "pink" => Some(egui::Color32::from_rgb(255, 120, 180)),
+        "white" => Some(egui::Color32::from_rgb(240, 240, 240)),
+        "black" => Some(egui::Color32::from_rgb(60, 60, 60)),
+        "brown" => Some(egui::Color32::from_rgb(160, 100, 40)),
+        "cyan" => Some(egui::Color32::from_rgb(60, 220, 220)),
+        "gray" | "grey" => Some(egui::Color32::from_rgb(150, 150, 150)),
+        _ => None,
+    }
+}
+
+fn render_task_with_colors(ui: &mut egui::Ui, text: &str) {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    for (i, word) in words.iter().enumerate() {
+        let stripped = word.trim_matches(|c: char| !c.is_alphanumeric());
+        if let Some(color) = color_for_word(stripped) {
+            let label = if i < words.len() - 1 {
+                format!("{} ", word)
+            } else {
+                word.to_string()
+            };
+            ui.label(egui::RichText::new(label).color(color).strong());
+        } else {
+            let label = if i < words.len() - 1 {
+                format!("{} ", word)
+            } else {
+                word.to_string()
+            };
+            ui.label(label);
+        }
     }
 }
