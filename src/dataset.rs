@@ -341,12 +341,29 @@ fn load_episodes_v3(
             // chunk directory
             for sub in fs::read_dir(&path).map_err(|e| format!("Read chunk dir: {}", e))? {
                 let sub = sub.map_err(|e| format!("Read sub: {}", e))?;
-                if sub.path().extension().map(|e| e == "parquet").unwrap_or(false) {
-                    parquet_files.push(sub.path());
+                let sub_path = sub.path();
+                let is_macos_resource_fork = sub_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.starts_with("._"))
+                    .unwrap_or(false);
+                if !is_macos_resource_fork
+                    && sub_path.extension().map(|e| e == "parquet").unwrap_or(false)
+                {
+                    parquet_files.push(sub_path);
                 }
             }
-        } else if path.extension().map(|e| e == "parquet").unwrap_or(false) {
-            parquet_files.push(path);
+        } else {
+            let is_macos_resource_fork = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.starts_with("._"))
+                .unwrap_or(false);
+            if !is_macos_resource_fork
+                && path.extension().map(|e| e == "parquet").unwrap_or(false)
+            {
+                parquet_files.push(path);
+            }
         }
     }
     parquet_files.sort();

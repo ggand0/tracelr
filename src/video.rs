@@ -52,17 +52,11 @@ pub(crate) fn decode_middle_frame(
         .decoder()
         .video()?;
 
-    // Seek to the midpoint of the episode's time range
-    let target_us = if let Some((from_s, to_s)) = seek_range {
-        let mid_s = (from_s + to_s) / 2.0;
-        (mid_s * 1_000_000.0) as i64
+    // Seek to the start of the episode's time range
+    let target_us = if let Some((from_s, _to_s)) = seek_range {
+        (from_s * 1_000_000.0) as i64
     } else {
-        let duration = ictx.duration();
-        if duration > 0 && total_frames > 2 {
-            duration / 2
-        } else {
-            0
-        }
+        0
     };
     if target_us > 0 {
         let _ = ictx.seek(target_us, ..target_us);
@@ -304,6 +298,14 @@ fn decode_all_frames_inner(
             } else {
                 frame_count
             };
+
+            // Skip frames before the seek target (seek lands on nearest keyframe before)
+            if let Some(target) = seek_to_frame {
+                if actual_frame < target {
+                    frame_count += 1;
+                    continue;
+                }
+            }
 
             let image = frame_to_color_image(&decoded).ok();
             if !tx.send_frame(FrameDecodeResult {
