@@ -330,7 +330,7 @@ impl GridView {
     ) -> Option<GridPane> {
         let from_ts = seek_range.map(|(from, _)| from).unwrap_or(0.0);
         let start_frame = if from_ts > 0.0 {
-            (from_ts * fps as f64) as usize
+            (from_ts * fps as f64).round() as usize
         } else {
             0
         };

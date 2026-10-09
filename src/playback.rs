@@ -199,7 +199,7 @@ impl App {
             .cloned().unwrap_or_default();
         let (from_ts, _to_ts) = ds.episode_time_range(self.current_episode, &video_key);
         let start_frame = if from_ts > 0.0 {
-            (from_ts * fps as f64) as usize
+            (from_ts * fps as f64).round() as usize
         } else {
             0
         };
