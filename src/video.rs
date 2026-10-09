@@ -316,12 +316,7 @@ fn decode_all_frames_inner(
             }
 
             // Calculate frame index from PTS
-            let actual_frame = if let (Some(pts), Some((_, tb))) = (decoded.pts(), &pts_base) {
-                let time_s = pts as f64 * tb.0 as f64 / tb.1 as f64;
-                (time_s * fps).round() as usize
-            } else {
-                frame_count
-            };
+            let actual_frame = pts_frame_index(&decoded, &pts_base, fps, frame_count);
 
             // Skip frames before the seek target (seek lands on nearest keyframe before)
             if let Some(target) = seek_to_frame {
@@ -349,12 +344,13 @@ fn decode_all_frames_inner(
         if cancel.load(Ordering::Relaxed) {
             return;
         }
-        let actual_frame = if let (Some(pts), Some((_, tb))) = (decoded.pts(), &pts_base) {
-            let time_s = pts as f64 * tb.0 as f64 / tb.1 as f64;
-            (time_s * fps).round() as usize
-        } else {
-            frame_count
-        };
+        let actual_frame = pts_frame_index(&decoded, &pts_base, fps, frame_count);
+        if let Some(target) = seek_to_frame {
+            if actual_frame < target {
+                frame_count += 1;
+                continue;
+            }
+        }
         let image = frame_to_color_image(&decoded).ok();
         if !tx.send_frame(FrameDecodeResult {
             frame_index: actual_frame,
@@ -363,6 +359,22 @@ fn decode_all_frames_inner(
             return;
         }
         frame_count += 1;
+    }
+}
+
+/// Frame index of a decoded frame from its PTS, or `fallback` when the frame
+/// has no PTS.
+fn pts_frame_index(
+    decoded: &ffmpeg_next::frame::Video,
+    pts_base: &Option<(i64, ffmpeg_next::Rational)>,
+    fps: f64,
+    fallback: usize,
+) -> usize {
+    if let (Some(pts), Some((_, tb))) = (decoded.pts(), pts_base) {
+        let time_s = pts as f64 * tb.0 as f64 / tb.1 as f64;
+        (time_s * fps).round() as usize
+    } else {
+        fallback
     }
 }
 
