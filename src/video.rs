@@ -36,7 +36,6 @@ pub(crate) fn decode_episode_start_frame(
     let mut ictx = ffmpeg_next::format::input(video_path)?;
 
     let video_stream_index;
-    let total_frames;
     let decoder_params;
     let time_base;
     let fps;
@@ -46,7 +45,6 @@ pub(crate) fn decode_episode_start_frame(
             .best(ffmpeg_next::media::Type::Video)
             .ok_or("No video stream found")?;
         video_stream_index = stream.index();
-        total_frames = stream.frames() as usize;
         decoder_params = stream.parameters();
         time_base = stream.time_base();
         let rate = stream.rate();
