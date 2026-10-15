@@ -908,10 +908,14 @@ impl GridView {
         self.panes.iter().map(|p| p.total_frames).max().unwrap_or(0)
     }
 
-    /// Current relative frame of the first pane (for slider position during playback).
+    /// Furthest relative frame across panes (for slider position during playback).
+    /// The slider spans the longest episode, so it follows the pane that has
+    /// played furthest instead of stopping when a shorter episode ends.
     pub fn current_relative_frame(&self) -> usize {
-        self.panes.first()
+        self.panes
+            .iter()
             .map(|p| p.current_frame.saturating_sub(p.episode_start_frame))
+            .max()
             .unwrap_or(0)
     }
 
