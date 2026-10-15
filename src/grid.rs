@@ -732,7 +732,7 @@ impl GridView {
             let stroke = if is_selected {
                 egui::Stroke::new(PANE_BORDER_WIDTH, theme_accent)
             } else {
-                egui::Stroke::new(1.0, cell_border)
+                egui::Stroke::new(1.0_f32, cell_border)
             };
             ui.painter().rect_stroke(cell_rect, PANE_BORDER_RADIUS, stroke, egui::StrokeKind::Outside);
         }

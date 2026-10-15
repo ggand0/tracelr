@@ -146,7 +146,7 @@ pub(crate) fn show_trajectory_overlay(
         while y <= gy1 + grid_step * 0.01 {
             let p0 = camera.project([gx0, y, ground_z], center, rect);
             let p1 = camera.project([gx1, y, ground_z], center, rect);
-            painter.line_segment([p0, p1], egui::Stroke::new(1.0, grid_color));
+            painter.line_segment([p0, p1], egui::Stroke::new(1.0_f32, grid_color));
             y += grid_step;
         }
     }
@@ -155,7 +155,7 @@ pub(crate) fn show_trajectory_overlay(
         while x <= gx1 + grid_step * 0.01 {
             let p0 = camera.project([x, gy0, ground_z], center, rect);
             let p1 = camera.project([x, gy1, ground_z], center, rect);
-            painter.line_segment([p0, p1], egui::Stroke::new(1.0, grid_color));
+            painter.line_segment([p0, p1], egui::Stroke::new(1.0_f32, grid_color));
             x += grid_step;
         }
     }
@@ -177,7 +177,7 @@ pub(crate) fn show_trajectory_overlay(
             let proj = camera.project(*upt, [0.0, 0.0, 0.0], axis_rect);
             let dir = (proj - zero).normalized() * axis_len;
             let end = axis_origin + dir;
-            painter.line_segment([axis_origin, end], egui::Stroke::new(1.5, colors[i]));
+            painter.line_segment([axis_origin, end], egui::Stroke::new(1.5_f32, colors[i]));
             painter.text(
                 end + dir.normalized() * 8.0,
                 egui::Align2::CENTER_CENTER,
@@ -219,9 +219,9 @@ pub(crate) fn show_trajectory_overlay(
                 let p0 = camera.project(positions[i], center, rect);
                 let p1 = camera.project(positions[i + 1], center, rect);
                 let (color, width) = if i < playhead {
-                    (accent_color, 1.5)
+                    (accent_color, 1.5_f32)
                 } else {
-                    (future_color, 1.0)
+                    (future_color, 1.0_f32)
                 };
                 painter.line_segment([p0, p1], egui::Stroke::new(width, color));
             }
@@ -253,13 +253,13 @@ pub(crate) fn show_trajectory_overlay(
                         let bot = camera.project([positions[i][0], positions[i][1], ground_z], center, rect);
                         let dist = ((top.x - bot.x).powi(2) + (top.y - bot.y).powi(2)).sqrt();
                         if dist > 3.0 {
-                            painter.line_segment([top, bot], egui::Stroke::new(0.5, drop_color));
+                            painter.line_segment([top, bot], egui::Stroke::new(0.5_f32, drop_color));
                         }
                     }
                     // Playhead drop line
                     let top = camera.project(positions[playhead], center, rect);
                     let bot = camera.project([positions[playhead][0], positions[playhead][1], ground_z], center, rect);
-                    painter.line_segment([top, bot], egui::Stroke::new(1.0, egui::Color32::from_gray(70)));
+                    painter.line_segment([top, bot], egui::Stroke::new(1.0_f32, egui::Color32::from_gray(70)));
                     painter.circle_filled(bot, 3.0, egui::Color32::from_gray(60));
 
                     // Past/future split
@@ -267,9 +267,9 @@ pub(crate) fn show_trajectory_overlay(
                         let p0 = camera.project(positions[i], center, rect);
                         let p1 = camera.project(positions[i + 1], center, rect);
                         let (color, width) = if i < playhead {
-                            (accent_color, 2.0)
+                            (accent_color, 2.0_f32)
                         } else {
-                            (future_color, 1.0)
+                            (future_color, 1.0_f32)
                         };
                         painter.line_segment([p0, p1], egui::Stroke::new(width, color));
                     }
@@ -299,7 +299,7 @@ pub(crate) fn show_trajectory_overlay(
                     for i in 0..n - 1 {
                         let p0 = camera.project(positions[i], center, rect);
                         let p1 = camera.project(positions[i + 1], center, rect);
-                        painter.line_segment([p0, p1], egui::Stroke::new(1.0, dim_color));
+                        painter.line_segment([p0, p1], egui::Stroke::new(1.0_f32, dim_color));
                     }
                 }
             }

@@ -308,7 +308,7 @@ impl EpisodeCache {
                         painter.rect_stroke(
                             cell_rect,
                             3.0,
-                            egui::Stroke::new(2.0, egui::Color32::WHITE),
+                            egui::Stroke::new(2.0_f32, egui::Color32::WHITE),
                             egui::epaint::StrokeKind::Outside,
                         );
                     }

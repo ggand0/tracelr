@@ -29,7 +29,7 @@ pub fn show_about_modal(ctx: &egui::Context, show: &mut bool, theme: &UiTheme) {
         .show(ctx, |ui| {
             egui::Frame::default()
                 .fill(theme.card_bg)
-                .stroke(egui::Stroke::new(1.0, theme.card_stroke))
+                .stroke(egui::Stroke::new(1.0_f32, theme.card_stroke))
                 .corner_radius(8.0)
                 .inner_margin(20.0)
                 .show(ui, |ui| {
