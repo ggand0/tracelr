@@ -306,6 +306,16 @@ fn load_episodes_v2(meta_dir: &Path, total_episodes: usize) -> Result<Vec<Episod
     }
 }
 
+/// True for `.parquet` files, excluding macOS AppleDouble `._*` files that
+/// macOS writes next to real files on exFAT/FAT volumes.
+fn is_parquet_file(path: &Path) -> bool {
+    let is_apple_double = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with("._"));
+    !is_apple_double && path.extension().is_some_and(|e| e == "parquet")
+}
+
 /// Load episodes from v3.0 format (parquet files under meta/episodes/).
 fn load_episodes_v3(
     _root: &Path,
@@ -341,11 +351,12 @@ fn load_episodes_v3(
             // chunk directory
             for sub in fs::read_dir(&path).map_err(|e| format!("Read chunk dir: {}", e))? {
                 let sub = sub.map_err(|e| format!("Read sub: {}", e))?;
-                if sub.path().extension().map(|e| e == "parquet").unwrap_or(false) {
-                    parquet_files.push(sub.path());
+                let sub_path = sub.path();
+                if is_parquet_file(&sub_path) {
+                    parquet_files.push(sub_path);
                 }
             }
-        } else if path.extension().map(|e| e == "parquet").unwrap_or(false) {
+        } else if is_parquet_file(&path) {
             parquet_files.push(path);
         }
     }
@@ -510,4 +521,17 @@ fn load_tasks_parquet(path: &Path) -> Result<Vec<TaskMeta>, String> {
 /// Check if a directory looks like a LeRobot dataset (has meta/info.json).
 pub(crate) fn is_lerobot_dataset(path: &Path) -> bool {
     path.is_dir() && path.join("meta").join("info.json").is_file()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_parquet_file_skips_apple_double() {
+        assert!(is_parquet_file(Path::new("meta/episodes/chunk-000/file-000.parquet")));
+        assert!(!is_parquet_file(Path::new("meta/episodes/chunk-000/._file-000.parquet")));
+        assert!(!is_parquet_file(Path::new("meta/episodes/chunk-000/file-000.json")));
+        assert!(!is_parquet_file(Path::new("meta/episodes/._chunk-000")));
+    }
 }

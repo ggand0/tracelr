@@ -21,13 +21,13 @@ pub(crate) struct DecodeResult {
     pub decode_ms: f64,
 }
 
-/// Decode a single frame from approximately the middle of a video file.
+/// Decode the first frame of an episode, shown as its still image.
 ///
-/// Opens the mp4, seeks to the midpoint, decodes the first available frame
-/// after the seek position, and converts to RGBA.
+/// Opens the mp4, seeks to the episode start, skips frames decoded before it,
+/// and converts the first frame at or after the start to RGBA.
 /// `seek_range` is an optional (from_seconds, to_seconds) range for v3.0 datasets
 /// where multiple episodes share one video file.
-pub(crate) fn decode_middle_frame(
+pub(crate) fn decode_episode_start_frame(
     video_path: &Path,
     seek_range: Option<(f64, f64)>,
 ) -> Result<egui::ColorImage, Box<dyn std::error::Error + Send + Sync>> {
@@ -36,39 +36,51 @@ pub(crate) fn decode_middle_frame(
     let mut ictx = ffmpeg_next::format::input(video_path)?;
 
     let video_stream_index;
-    let total_frames;
     let decoder_params;
+    let time_base;
+    let fps;
     {
         let stream = ictx
             .streams()
             .best(ffmpeg_next::media::Type::Video)
             .ok_or("No video stream found")?;
         video_stream_index = stream.index();
-        total_frames = stream.frames() as usize;
         decoder_params = stream.parameters();
+        time_base = stream.time_base();
+        let rate = stream.rate();
+        fps = if rate.1 > 0 {
+            rate.0 as f64 / rate.1 as f64
+        } else {
+            30.0
+        };
     }
 
     let mut decoder = ffmpeg_next::codec::context::Context::from_parameters(decoder_params)?
         .decoder()
         .video()?;
 
-    // Seek to the midpoint of the episode's time range
-    let target_us = if let Some((from_s, to_s)) = seek_range {
-        let mid_s = (from_s + to_s) / 2.0;
-        (mid_s * 1_000_000.0) as i64
+    // Seek to the start of the episode's time range
+    let target_us = if let Some((from_s, _to_s)) = seek_range {
+        (from_s * 1_000_000.0) as i64
     } else {
-        let duration = ictx.duration();
-        if duration > 0 && total_frames > 2 {
-            duration / 2
-        } else {
-            0
-        }
+        0
     };
     if target_us > 0 {
         let _ = ictx.seek(target_us, ..target_us);
     }
 
-    // Decode the first available frame after the seek position.
+    // The seek lands on the nearest keyframe at or before the target, so skip
+    // frames decoded before the episode start frame.
+    let target_frame = seek_range
+        .map(|(from_s, _to_s)| (from_s * fps).round() as usize)
+        .unwrap_or(0);
+    let is_before_target = |frame: &ffmpeg_next::frame::Video| {
+        frame.pts().is_some_and(|pts| {
+            let time_s = pts as f64 * time_base.0 as f64 / time_base.1 as f64;
+            ((time_s * fps).round() as usize) < target_frame
+        })
+    };
+
     let mut decoded = ffmpeg_next::frame::Video::empty();
 
     for (stream, packet) in ictx.packets() {
@@ -76,15 +88,19 @@ pub(crate) fn decode_middle_frame(
             continue;
         }
         decoder.send_packet(&packet)?;
-        if decoder.receive_frame(&mut decoded).is_ok() {
-            return frame_to_color_image(&decoded);
+        while decoder.receive_frame(&mut decoded).is_ok() {
+            if !is_before_target(&decoded) {
+                return frame_to_color_image(&decoded);
+            }
         }
     }
 
     // Flush the decoder in case there are buffered frames.
     decoder.send_eof()?;
-    if decoder.receive_frame(&mut decoded).is_ok() {
-        return frame_to_color_image(&decoded);
+    while decoder.receive_frame(&mut decoded).is_ok() {
+        if !is_before_target(&decoded) {
+            return frame_to_color_image(&decoded);
+        }
     }
 
     Err("No frames could be decoded".into())
@@ -298,12 +314,15 @@ fn decode_all_frames_inner(
             }
 
             // Calculate frame index from PTS
-            let actual_frame = if let (Some(pts), Some((_, tb))) = (decoded.pts(), &pts_base) {
-                let time_s = pts as f64 * tb.0 as f64 / tb.1 as f64;
-                (time_s * fps).round() as usize
-            } else {
-                frame_count
-            };
+            let actual_frame = pts_frame_index(&decoded, &pts_base, fps, frame_count);
+
+            // Skip frames before the seek target (seek lands on nearest keyframe before)
+            if let Some(target) = seek_to_frame {
+                if actual_frame < target {
+                    frame_count += 1;
+                    continue;
+                }
+            }
 
             let image = frame_to_color_image(&decoded).ok();
             if !tx.send_frame(FrameDecodeResult {
@@ -323,12 +342,13 @@ fn decode_all_frames_inner(
         if cancel.load(Ordering::Relaxed) {
             return;
         }
-        let actual_frame = if let (Some(pts), Some((_, tb))) = (decoded.pts(), &pts_base) {
-            let time_s = pts as f64 * tb.0 as f64 / tb.1 as f64;
-            (time_s * fps).round() as usize
-        } else {
-            frame_count
-        };
+        let actual_frame = pts_frame_index(&decoded, &pts_base, fps, frame_count);
+        if let Some(target) = seek_to_frame {
+            if actual_frame < target {
+                frame_count += 1;
+                continue;
+            }
+        }
         let image = frame_to_color_image(&decoded).ok();
         if !tx.send_frame(FrameDecodeResult {
             frame_index: actual_frame,
@@ -337,6 +357,22 @@ fn decode_all_frames_inner(
             return;
         }
         frame_count += 1;
+    }
+}
+
+/// Frame index of a decoded frame from its PTS, or `fallback` when the frame
+/// has no PTS.
+fn pts_frame_index(
+    decoded: &ffmpeg_next::frame::Video,
+    pts_base: &Option<(i64, ffmpeg_next::Rational)>,
+    fps: f64,
+    fallback: usize,
+) -> usize {
+    if let (Some(pts), Some((_, tb))) = (decoded.pts(), pts_base) {
+        let time_s = pts as f64 * tb.0 as f64 / tb.1 as f64;
+        (time_s * fps).round() as usize
+    } else {
+        fallback
     }
 }
 
@@ -461,14 +497,14 @@ pub(crate) fn scrub_worker(
     }
 }
 
-/// Decode middle frame with timing info, for use in background threads.
-pub(crate) fn decode_middle_frame_timed(
+/// Decode episode start frame with timing info, for use in background threads.
+pub(crate) fn decode_episode_start_frame_timed(
     video_path: &Path,
     episode_index: usize,
     seek_range: Option<(f64, f64)>,
 ) -> DecodeResult {
     let start = Instant::now();
-    let image = decode_middle_frame(video_path, seek_range)
+    let image = decode_episode_start_frame(video_path, seek_range)
         .map_err(|e| {
             log::warn!(
                 "Failed to decode episode {} from {}: {}",

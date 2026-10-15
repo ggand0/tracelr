@@ -191,7 +191,7 @@ impl EpisodeCache {
         }
     }
 
-    /// Spawn a background thread to decode a mid-episode frame.
+    /// Spawn a background thread to decode an episode start frame.
     fn spawn_load(&mut self, episode_index: usize, video_path: &Path, seek_range: Option<(f64, f64)>) {
         if self.in_flight.contains(&episode_index) {
             return;
@@ -203,20 +203,20 @@ impl EpisodeCache {
         let ctx = self.ctx.clone();
 
         std::thread::spawn(move || {
-            let result = video::decode_middle_frame_timed(&path, episode_index, seek_range);
+            let result = video::decode_episode_start_frame_timed(&path, episode_index, seek_range);
             let _ = tx.send(result);
             ctx.request_repaint();
         });
     }
 
-    /// Synchronously decode a mid-episode frame and upload as a texture.
+    /// Synchronously decode an episode start frame and upload as a texture.
     fn decode_sync(
         video_path: &Path,
         episode_index: usize,
         seek_range: Option<(f64, f64)>,
         ctx: &egui::Context,
     ) -> Option<egui::TextureHandle> {
-        match video::decode_middle_frame(video_path, seek_range) {
+        match video::decode_episode_start_frame(video_path, seek_range) {
             Ok(image) => {
                 let name = format!("ep_{:03}_sync", episode_index);
                 Some(ctx.load_texture(name, image, egui::TextureOptions::LINEAR))

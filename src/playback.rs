@@ -28,7 +28,7 @@ impl App {
         if let Some(path) = self.video_paths.get(self.current_episode) {
             let seek_range = self.episode_seek_range();
             let start = Instant::now();
-            match video::decode_middle_frame(path, seek_range) {
+            match video::decode_episode_start_frame(path, seek_range) {
                 Ok(image) => {
                     let decode_ms = start.elapsed().as_secs_f64() * 1000.0;
                     log::debug!(
@@ -160,7 +160,7 @@ impl App {
                 let (from, to) = ds.episode_time_range(episode, vk);
                 if to > from { Some((from, to)) } else { None }
             });
-            match video::decode_middle_frame(path, seek_range) {
+            match video::decode_episode_start_frame(path, seek_range) {
                 Ok(image) => {
                     let name = format!("ep_{:03}_slider", episode);
                     self.current_texture = Some(ctx.load_texture(
@@ -199,7 +199,7 @@ impl App {
             .cloned().unwrap_or_default();
         let (from_ts, _to_ts) = ds.episode_time_range(self.current_episode, &video_key);
         let start_frame = if from_ts > 0.0 {
-            (from_ts * fps as f64) as usize
+            (from_ts * fps as f64).round() as usize
         } else {
             0
         };
