@@ -124,9 +124,21 @@ pub(crate) fn spawn(req: ExportRequest, ctx: egui::Context) -> ExportJob {
         .name("export".into())
         .spawn(move || {
             let progress = Progress { tx: &tx, ctx: &ctx };
-            let event = match run(req, &progress, &cancel_thread) {
-                Ok(out) => ExportEvent::Finished(out),
-                Err(e) => ExportEvent::Failed(e),
+            // A panic must still end the job, or the UI would wait on it forever.
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run(req, &progress, &cancel_thread)
+            }));
+            let event = match result {
+                Ok(Ok(out)) => ExportEvent::Finished(out),
+                Ok(Err(e)) => ExportEvent::Failed(e),
+                Err(panic) => {
+                    let msg = panic
+                        .downcast_ref::<String>()
+                        .map(String::as_str)
+                        .or_else(|| panic.downcast_ref::<&str>().copied())
+                        .unwrap_or("unknown error");
+                    ExportEvent::Failed(format!("export crashed: {}", msg))
+                }
             };
             let _ = tx.send(event);
             ctx.request_repaint();
@@ -183,21 +195,41 @@ fn run(req: ExportRequest, progress: &Progress, cancel: &AtomicBool) -> Result<E
         }
         (FrameRange::Single(frame), Sink::Png(path)) => {
             let canvas = single_frame(&req, frame, progress, cancel)?;
-            canvas.save_png(path).inspect_err(|_| {
-                let _ = std::fs::remove_file(path);
-            })?;
+            write_replacing(path, |tmp| canvas.save_png(tmp))?;
             Ok(ExportOutput::Saved { path: path.clone(), note: None })
         }
         (FrameRange::Whole, Sink::Mp4(path)) => {
-            let result = export_clip(&req, path, progress, cancel);
-            if result.is_err() {
-                let _ = std::fs::remove_file(path);
-            }
-            result
+            write_replacing(path, |tmp| export_clip(&req, tmp, progress, cancel)).map(|out| match out {
+                ExportOutput::Saved { note, .. } => ExportOutput::Saved { path: path.clone(), note },
+                other => other,
+            })
         }
         (FrameRange::Whole, Sink::Report(parent)) => export_report(&req, parent, progress, cancel),
         _ => Err("Unsupported export combination".into()),
     }
+}
+
+/// Run `write` against a hidden sibling of `path` and move the result onto `path`
+/// only when it succeeds, so a failed or cancelled export never destroys a file
+/// that already exists there. The extension is kept because ffmpeg and the image
+/// crate pick the format from it.
+fn write_replacing<T>(path: &Path, write: impl FnOnce(&Path) -> Result<T, String>) -> Result<T, String> {
+    let name = path
+        .file_name()
+        .ok_or_else(|| format!("Invalid output path {}", path.display()))?
+        .to_string_lossy();
+    let ext = path.extension().map(|e| e.to_string_lossy()).unwrap_or_default();
+    let tmp = path.with_file_name(format!(".{}.partial.{}", name, ext));
+
+    let result = write(&tmp).and_then(|value| {
+        std::fs::rename(&tmp, path)
+            .map(|()| value)
+            .map_err(|e| format!("Failed to write {}: {}", path.display(), e))
+    });
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 /// Decodes all cameras in lockstep and composites them onto one canvas.
@@ -461,4 +493,30 @@ fn sanitize_file_name(name: &str) -> String {
     name.chars()
         .map(|c| if c.is_alphanumeric() || matches!(c, '-' | '_' | '.') { c } else { '_' })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_replacing_keeps_existing_file_on_failure() {
+        let dir = std::env::temp_dir().join(format!("tracelr_replace_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("clip.mp4");
+        std::fs::write(&path, b"old").unwrap();
+
+        let failed: Result<(), String> = write_replacing(&path, |tmp| {
+            assert_eq!(tmp.extension().unwrap(), "mp4");
+            std::fs::write(tmp, b"partial").unwrap();
+            Err(CANCELLED.into())
+        });
+        assert!(failed.is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"old");
+
+        write_replacing(&path, |tmp| std::fs::write(tmp, b"new").map_err(|e| e.to_string())).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "no partial file left behind");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

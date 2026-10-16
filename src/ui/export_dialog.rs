@@ -303,11 +303,17 @@ impl App {
     pub(crate) fn poll_export_job(&mut self) {
         let Some(job) = &mut self.export_job else { return };
         let mut finished = None;
-        while let Ok(event) = job.rx.try_recv() {
-            match event {
-                ExportEvent::Progress { done, total } => job.progress = (done, total),
-                ExportEvent::Finished(out) => finished = Some(Ok(out)),
-                ExportEvent::Failed(e) => finished = Some(Err(e)),
+        loop {
+            match job.rx.try_recv() {
+                Ok(ExportEvent::Progress { done, total }) => job.progress = (done, total),
+                Ok(ExportEvent::Finished(out)) => finished = Some(Ok(out)),
+                Ok(ExportEvent::Failed(e)) => finished = Some(Err(e)),
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    // The thread ended without a result; do not wait on it forever.
+                    finished.get_or_insert_with(|| Err("export stopped unexpectedly".to_string()));
+                    break;
+                }
             }
         }
         let Some(result) = finished else { return };
