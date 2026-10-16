@@ -1,6 +1,6 @@
 [package]
 name = "tracelr"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "A fast desktop tool for exploring and tracing LeRobot datasets"
 license = "MIT OR Apache-2.0"
