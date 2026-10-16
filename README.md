@@ -16,6 +16,9 @@ Browse episodes, play back videos, and inspect metadata. Optionally enable annot
 - **EE trajectory visualization** via forward kinematics from URDF files, with 3D orbit camera and live playhead
 - **Multi-arm support** for bimanual robots (auto-detected from URDF filenames)
 - **Grid view** to play multiple episodes simultaneously with multi-trajectory overlay
+- **Episode info** with the per-episode task string from the dataset
+- **Episode export** of the current episode as a clipboard frame (`Ctrl+C`), PNG, h264 clip, or a report folder with per-camera clips, trajectory image, and summary
+- **Curation mode** (Edit > Curation Mode) to tag episodes with multiple labels from the grid, saved to `curation.json`
 - **Annotation mode** (`--annotate`) to assign text prompts to episodes, with configurable prompts, persistence, and LeRobot export
 
 ## Supported formats
@@ -72,14 +75,15 @@ cargo run --profile opt-dev                                # launch, then drag-d
 | `C` / `Shift+C` | Cycle camera |
 | `T` | Toggle trajectory panel |
 | `+` / `-` | Resize grid |
-| `1`-`9` | Assign prompt (annotation mode) |
-| `Ctrl+S` | Save annotations |
+| `Ctrl+C` | Copy current frame to clipboard |
+| `1`-`9` | Assign prompt (annotation mode) / toggle label (curation mode) |
+| `Ctrl+S` | Save annotations or curation |
 
 `G`, `M`, and `N` are composable. `Escape` returns to single view.
 
 ## Docs
 
-- **[Usage guide](docs/usage.md)**: multi-camera views, trajectory/URDF setup, annotation mode, Linux desktop integration
+- **[Usage guide](docs/usage.md)**: multi-camera views, trajectory/URDF setup, annotation and curation modes, episode export, Linux desktop integration
 
 ## License
 

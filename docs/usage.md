@@ -123,6 +123,32 @@ Annotations save to `<dataset_dir>/annotations.json`:
 }
 ```
 
+## Curation mode
+
+Enable with Edit > Curation Mode to tag episodes with multiple labels, for example marking low-quality episodes for deletion or bookmarking failure patterns. Curation and annotation modes are mutually exclusive.
+
+- Create labels in the side panel text field; each gets a color from a palette
+- Select episodes in the grid (click, Shift+click for multiple), then click a label or press `1`-`9` to toggle it
+- Colored dots on grid panes and in the episode list show assigned labels
+- Saves to `<dataset_dir>/curation.json` on every change (`Ctrl+S` also saves)
+
+```json
+{
+  "labels": [{"name": "low_quality", "color": [220, 60, 60]}],
+  "episodes": {"3": ["low_quality"], "7": ["low_quality", "gripper_stuck"]}
+}
+```
+
+## Episode export
+
+Exports the current episode with the selected cameras tiled side by side and, optionally, the EE trajectory panel.
+
+- `Ctrl+C` or File > Copy Frame copies the frame on screen to the clipboard; File > Save Frame as PNG... saves it
+- File > Export Clip... writes one h264 mp4 of the whole episode
+- File > Export Report... writes `<dataset>_ep<NNNN>/` with per-camera clips, the composite clip, `thumbnail.png`, `trajectory.png`, `summary.md`, and `metadata.json`
+
+The Export window sets which cameras are included and their order, whether the trajectory panel is included, the number of rows (Auto, 1, 2, 3), and Full or Half scale, with a layout preview. Each camera keeps its aspect ratio. v3.0 episodes are trimmed to their timestamp range. Exports run in the background with a progress bar and Cancel.
+
 ## Linux desktop integration
 
 On GNOME 46+ (Ubuntu 24.04+), the taskbar icon requires installing a `.desktop` file and icon to XDG locations:
