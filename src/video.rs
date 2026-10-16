@@ -7,9 +7,11 @@ use eframe::egui;
 
 static FFMPEG_INIT: Once = Once::new();
 
-fn ensure_ffmpeg_init() {
+pub(crate) fn ensure_ffmpeg_init() {
     FFMPEG_INIT.call_once(|| {
         ffmpeg_next::init().expect("Failed to initialize ffmpeg");
+        // Keep encoder statistics (libx264 prints them at info level) out of the terminal.
+        ffmpeg_next::log::set_level(ffmpeg_next::log::Level::Warning);
     });
 }
 
@@ -23,129 +25,18 @@ pub(crate) struct DecodeResult {
 
 /// Decode the first frame of an episode, shown as its still image.
 ///
-/// Opens the mp4, seeks to the episode start, skips frames decoded before it,
-/// and converts the first frame at or after the start to RGBA.
 /// `seek_range` is an optional (from_seconds, to_seconds) range for v3.0 datasets
 /// where multiple episodes share one video file.
 pub(crate) fn decode_episode_start_frame(
     video_path: &Path,
     seek_range: Option<(f64, f64)>,
 ) -> Result<egui::ColorImage, Box<dyn std::error::Error + Send + Sync>> {
-    ensure_ffmpeg_init();
-
-    let mut ictx = ffmpeg_next::format::input(video_path)?;
-
-    let video_stream_index;
-    let decoder_params;
-    let time_base;
-    let fps;
-    {
-        let stream = ictx
-            .streams()
-            .best(ffmpeg_next::media::Type::Video)
-            .ok_or("No video stream found")?;
-        video_stream_index = stream.index();
-        decoder_params = stream.parameters();
-        time_base = stream.time_base();
-        let rate = stream.rate();
-        fps = if rate.1 > 0 {
-            rate.0 as f64 / rate.1 as f64
-        } else {
-            30.0
-        };
-    }
-
-    let mut decoder = ffmpeg_next::codec::context::Context::from_parameters(decoder_params)?
-        .decoder()
-        .video()?;
-
-    // Seek to the start of the episode's time range
-    let target_us = if let Some((from_s, _to_s)) = seek_range {
-        (from_s * 1_000_000.0) as i64
-    } else {
-        0
-    };
-    if target_us > 0 {
-        let _ = ictx.seek(target_us, ..target_us);
-    }
-
-    // The seek lands on the nearest keyframe at or before the target, so skip
-    // frames decoded before the episode start frame.
-    let target_frame = seek_range
-        .map(|(from_s, _to_s)| (from_s * fps).round() as usize)
-        .unwrap_or(0);
-    let is_before_target = |frame: &ffmpeg_next::frame::Video| {
-        frame.pts().is_some_and(|pts| {
-            let time_s = pts as f64 * time_base.0 as f64 / time_base.1 as f64;
-            ((time_s * fps).round() as usize) < target_frame
-        })
-    };
-
-    let mut decoded = ffmpeg_next::frame::Video::empty();
-
-    for (stream, packet) in ictx.packets() {
-        if stream.index() != video_stream_index {
-            continue;
-        }
-        decoder.send_packet(&packet)?;
-        while decoder.receive_frame(&mut decoded).is_ok() {
-            if !is_before_target(&decoded) {
-                return frame_to_color_image(&decoded);
-            }
-        }
-    }
-
-    // Flush the decoder in case there are buffered frames.
-    decoder.send_eof()?;
-    while decoder.receive_frame(&mut decoded).is_ok() {
-        if !is_before_target(&decoded) {
-            return frame_to_color_image(&decoded);
-        }
-    }
-
-    Err("No frames could be decoded".into())
-}
-
-/// Decode the first frame of a video file (fast, no seeking).
-#[allow(dead_code)]
-pub(crate) fn decode_first_frame(
-    video_path: &Path,
-) -> Result<egui::ColorImage, Box<dyn std::error::Error + Send + Sync>> {
-    ensure_ffmpeg_init();
-
-    let mut ictx = ffmpeg_next::format::input(video_path)?;
-
-    let video_stream_index;
-    let decoder_params;
-    {
-        let stream = ictx
-            .streams()
-            .best(ffmpeg_next::media::Type::Video)
-            .ok_or("No video stream found")?;
-        video_stream_index = stream.index();
-        decoder_params = stream.parameters();
-    }
-
-    let mut decoder = ffmpeg_next::codec::context::Context::from_parameters(decoder_params)?
-        .decoder()
-        .video()?;
-
-    let mut decoded = ffmpeg_next::frame::Video::empty();
-    for (stream, packet) in ictx.packets() {
-        if stream.index() != video_stream_index {
-            continue;
-        }
-        decoder.send_packet(&packet)?;
-        if decoder.receive_frame(&mut decoded).is_ok() {
-            return frame_to_color_image(&decoded);
-        }
-    }
-
-    Err("No frames could be decoded".into())
+    let mut frames = crate::export::source::EpisodeFrames::open(video_path, seek_range, Some(1))?;
+    frames.next()?.ok_or_else(|| "No frames could be decoded".into())
 }
 
 /// Convert an ffmpeg Video frame to an egui ColorImage (RGBA).
-fn frame_to_color_image(
+pub(crate) fn frame_to_color_image(
     frame: &ffmpeg_next::frame::Video,
 ) -> Result<egui::ColorImage, Box<dyn std::error::Error + Send + Sync>> {
     let width = frame.width() as usize;

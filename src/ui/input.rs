@@ -29,12 +29,15 @@ impl App {
         let mut minus_pressed = false;
         let mut l_pressed = false;
         let mut question_pressed = false;
+        let mut copy_pressed = false;
 
         ctx.input(|i| {
             g_pressed = i.key_pressed(egui::Key::G);
             t_pressed = i.key_pressed(egui::Key::T);
-            c_pressed = i.key_pressed(egui::Key::C) && !i.modifiers.shift;
-            shift_c_pressed = i.key_pressed(egui::Key::C) && i.modifiers.shift;
+            // Cmd/Ctrl+C arrives as Event::Copy (copy frame), so keep it out of C.
+            c_pressed = i.key_pressed(egui::Key::C) && !i.modifiers.shift && !i.modifiers.command;
+            shift_c_pressed = i.key_pressed(egui::Key::C) && i.modifiers.shift && !i.modifiers.command;
+            copy_pressed = i.events.iter().any(|e| matches!(e, egui::Event::Copy));
             m_pressed = i.key_pressed(egui::Key::M);
             n_pressed = i.key_pressed(egui::Key::N);
             l_pressed = i.key_pressed(egui::Key::L);
@@ -94,6 +97,13 @@ impl App {
                 }
             }
         });
+
+        // Cmd/Ctrl+C copies the frame on screen. Text fields keep normal copy
+        // because a focused widget returns early above.
+        if copy_pressed {
+            self.copy_current_frame(ctx);
+            return;
+        }
 
         // ? toggles the shortcut bar (works in any mode)
         if question_pressed {

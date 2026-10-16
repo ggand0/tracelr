@@ -24,6 +24,7 @@ mod build_info;
 mod cache;
 mod curation;
 mod dataset;
+mod export;
 mod grid;
 mod perf;
 mod playback;

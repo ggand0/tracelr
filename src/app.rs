@@ -123,10 +123,19 @@ pub struct App {
     pub(crate) show_shortcut_bar: bool,
     /// Whether the About modal is visible.
     pub(crate) show_about: bool,
+
+    // Export
+    /// eframe's wgpu device and queue, used to render the trajectory panel offscreen.
+    pub(crate) gpu: Option<crate::export::GpuHandles>,
+    pub(crate) export_dialog: crate::ui::export_dialog::ExportDialogState,
+    pub(crate) export_job: Option<crate::export::ExportJob>,
+    pub(crate) export_toast: Option<(String, Instant)>,
+    /// Kept alive so the copied image stays on the clipboard on X11/Wayland.
+    pub(crate) clipboard: Option<arboard::Clipboard>,
 }
 
 impl App {
-    pub fn new(_cc: &eframe::CreationContext, initial_path: Option<PathBuf>, annotate: bool, urdf_override: Option<PathBuf>) -> Self {
+    pub fn new(cc: &eframe::CreationContext, initial_path: Option<PathBuf>, annotate: bool, urdf_override: Option<PathBuf>) -> Self {
         let annotations = if annotate {
             AnnotationState::load_prompts(initial_path.as_deref())
         } else {
@@ -179,13 +188,21 @@ impl App {
             show_cache_overlay: false,
             show_shortcut_bar: false,
             show_about: false,
+            gpu: cc.wgpu_render_state.as_ref().map(|rs| crate::export::GpuHandles {
+                device: rs.device.clone(),
+                queue: rs.queue.clone(),
+            }),
+            export_dialog: crate::ui::export_dialog::ExportDialogState::new(),
+            export_job: None,
+            export_toast: None,
+            clipboard: None,
         };
 
         if let Some(path) = initial_path {
             app.load_dataset(&path);
             if app.dataset.is_some() {
-                app.init_cache(&_cc.egui_ctx);
-                app.enter_video_mode(&_cc.egui_ctx);
+                app.init_cache(&cc.egui_ctx);
+                app.enter_video_mode(&cc.egui_ctx);
             }
         }
 
@@ -399,6 +416,53 @@ impl App {
             .unwrap_or(false)
     }
 
+    /// Compute the active arm's EE trajectory for `ep_idx` and put it in the cache
+    /// if it is not there yet. Returns whether the trajectory is cached.
+    pub(crate) fn ensure_trajectory_cached(&mut self, ep_idx: usize) -> bool {
+        if self.trajectory_cache.get(ep_idx).is_some() {
+            return true;
+        }
+        let Some(ds) = &self.dataset else {
+            return false;
+        };
+        let arm_idx = self.active_arm_index.min(self.arms.len().saturating_sub(1));
+        let Some(arm) = self.arms.get(arm_idx) else {
+            return false;
+        };
+
+        let is_v3 = ds.info.codebase_version.starts_with("v3");
+        let (data_chunk, data_file) = ds
+            .episodes
+            .get(ep_idx)
+            .map(|m| (m.data_chunk_index, m.data_file_index))
+            .unwrap_or((0, 0));
+        let parquet_path = crate::trajectory::episode_data_path(
+            &ds.root,
+            ep_idx,
+            ds.info.chunks_size,
+            &ds.info.codebase_version,
+            data_chunk,
+            data_file,
+        );
+        let filter_ep = if is_v3 { Some(ep_idx) } else { None };
+        match crate::trajectory::load_episode_states(&parquet_path, filter_ep) {
+            Ok(states) => {
+                let traj = arm.kinematics.compute_trajectory(&states, &arm.pos_indices);
+                log::debug!(
+                    "Computed trajectory for ep {}: {} points",
+                    ep_idx,
+                    traj.positions.len(),
+                );
+                self.trajectory_cache.insert(ep_idx, traj);
+                true
+            }
+            Err(e) => {
+                log::warn!("Failed to load trajectory for ep {}: {}", ep_idx, e);
+                false
+            }
+        }
+    }
+
     pub(crate) fn episode_seek_range(&self) -> Option<(f64, f64)> {
         let ds = self.dataset.as_ref()?;
         let vk = ds.info.video_keys.get(self.current_video_key_index)?;
@@ -468,6 +532,7 @@ impl eframe::App for App {
             self.tick_playback(ctx);
         }
 
+        self.poll_export_job();
         self.handle_dropped_files(ctx);
         self.handle_keyboard(ctx);
 
@@ -509,6 +574,9 @@ impl eframe::App for App {
         self.show_shortcut_bar(ctx);
 
         let in_grid = self.grid_view.is_some();
+
+        // Export progress sits below every other bottom panel
+        self.show_export_status(ctx);
 
         // Left panel: episode list (always visible)
         egui::SidePanel::left("episode_list")
@@ -592,6 +660,9 @@ impl eframe::App for App {
                 cache.show_debug_overlay(ctx, self.current_episode, self.video_paths.len());
             }
         }
+
+        self.show_export_dialog(ctx);
+        self.show_export_toast(ctx);
 
         // About modal (rendered last so it sits on top)
         crate::about::show_about_modal(ctx, &mut self.show_about, &self.theme);
