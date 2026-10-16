@@ -59,7 +59,7 @@ impl EpisodeFrames {
 
         let (start_frame, end_frame) = match seek_range {
             Some((from_s, to_s)) => {
-                // The seek lands on the nearest keyframe at or before the target.
+                // ffmpeg seeks to the nearest keyframe at or before the target.
                 let target_us = (from_s * 1_000_000.0) as i64;
                 if target_us > 0 {
                     let _ = ictx.seek(target_us, ..target_us);

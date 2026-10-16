@@ -99,7 +99,7 @@ enum Cell {
 ///
 /// Every camera keeps its own aspect ratio: the tiles of a row share one height,
 /// and each row is scaled to the width of the first row, so frames sit edge to
-/// edge with no letterbox bars and nothing is cropped. Cameras of the same size
+/// edge without cropping. Cameras of the same size
 /// give a plain grid. With the trajectory, the panel takes the bottom-right cell
 /// and the cameras fill the other cells in order, so empty cells end up just
 /// before it. The panel and empty cells use the first camera's aspect ratio.
