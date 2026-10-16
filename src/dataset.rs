@@ -19,6 +19,8 @@ pub(crate) struct DatasetInfo {
     pub total_episodes: usize,
     pub total_frames: usize,
     pub video_keys: Vec<String>,
+    /// Frame size (width, height) per video key from info.json, when present.
+    pub video_sizes: Vec<Option<(usize, usize)>>,
     pub video_path_template: String,
     pub chunks_size: usize,
     pub codebase_version: String,
@@ -77,6 +79,26 @@ struct RawFeature {
     dtype: String,
     #[serde(default)]
     names: Option<Vec<String>>,
+    #[serde(default)]
+    shape: Option<Vec<usize>>,
+}
+
+impl RawFeature {
+    /// (width, height) of a video feature, from `shape` labelled by `names`
+    /// (LeRobot writes [height, width, channels]).
+    fn video_size(&self) -> Option<(usize, usize)> {
+        let shape = self.shape.as_ref()?;
+        let pos = |name: &str| {
+            self.names
+                .as_ref()
+                .and_then(|names| names.iter().position(|n| n == name))
+        };
+        let (h, w) = match (pos("height"), pos("width")) {
+            (Some(h), Some(w)) => (*shape.get(h)?, *shape.get(w)?),
+            _ => (*shape.first()?, *shape.get(1)?),
+        };
+        (w > 0 && h > 0).then_some((w, h))
+    }
 }
 
 #[derive(Deserialize)]
@@ -128,6 +150,17 @@ impl LeRobotDataset {
             })
             .unwrap_or_default();
 
+        let video_sizes = video_keys
+            .iter()
+            .map(|k| {
+                raw_info
+                    .features
+                    .as_ref()
+                    .and_then(|feats| feats.get(k))
+                    .and_then(RawFeature::video_size)
+            })
+            .collect();
+
         // Extract state feature names (e.g. ["shoulder_pan.pos", ...])
         let state_names = raw_info
             .features
@@ -141,6 +174,7 @@ impl LeRobotDataset {
             total_episodes: raw_info.total_episodes,
             total_frames: raw_info.total_frames,
             video_keys: video_keys.clone(),
+            video_sizes,
             video_path_template: raw_info.video_path.unwrap_or_else(|| {
                 "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4"
                     .to_string()
@@ -533,5 +567,21 @@ mod tests {
         assert!(!is_parquet_file(Path::new("meta/episodes/chunk-000/._file-000.parquet")));
         assert!(!is_parquet_file(Path::new("meta/episodes/chunk-000/file-000.json")));
         assert!(!is_parquet_file(Path::new("meta/episodes/._chunk-000")));
+    }
+
+    #[test]
+    fn video_size_from_named_shape() {
+        let f: RawFeature = serde_json::from_str(
+            r#"{"dtype": "video", "shape": [480, 640, 3], "names": ["height", "width", "channels"]}"#,
+        )
+        .unwrap();
+        assert_eq!(f.video_size(), Some((640, 480)));
+
+        let unnamed: RawFeature =
+            serde_json::from_str(r#"{"dtype": "video", "shape": [720, 1280, 3]}"#).unwrap();
+        assert_eq!(unnamed.video_size(), Some((1280, 720)));
+
+        let missing: RawFeature = serde_json::from_str(r#"{"dtype": "video"}"#).unwrap();
+        assert_eq!(missing.video_size(), None);
     }
 }
