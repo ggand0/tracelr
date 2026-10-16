@@ -482,13 +482,15 @@ impl App {
                 });
                 ui.add_space(6.0);
 
-                // The first camera in order sets the tile size, as in the export.
-                let tile = cameras
-                    .first()
-                    .and_then(|&c| sizes.get(c).copied().flatten())
-                    .unwrap_or((640, 480));
+                // Camera sizes from info.json; a camera without one borrows the
+                // first known size.
+                let known = sizes.iter().flatten().copied().next().unwrap_or((640, 480));
+                let cam_sizes: Vec<_> = cameras
+                    .iter()
+                    .map(|&c| sizes.get(c).copied().flatten().unwrap_or(known))
+                    .collect();
                 let scale = if state.half_scale { 0.5 } else { 1.0 };
-                let plan = crate::export::compose::plan(cameras.len(), tile, with_traj, scale, state.rows);
+                let plan = crate::export::compose::plan(&cam_sizes, with_traj, scale, state.rows);
                 let labels: Vec<&str> = cameras.iter().map(|&c| names[c].as_str()).collect();
                 layout_preview(ui, &plan, &labels, accent);
 

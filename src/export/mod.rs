@@ -220,7 +220,10 @@ impl Compositor {
             .map(|c| EpisodeFrames::open(&c.path, c.seek_range, Some(req.episode_length)))
             .collect::<Result<Vec<_>, _>>()?;
         let with_traj = req.layout == Layout::CamerasWithTrajectory;
-        let plan = compose::plan(sources.len(), sources[0].size(), with_traj, req.scale, req.rows);
+        let plan = {
+            let sizes: Vec<_> = sources.iter().map(EpisodeFrames::size).collect();
+            compose::plan(&sizes, with_traj, req.scale, req.rows)
+        };
         let traj = match (&plan.traj, &req.trajectory) {
             (Some(rect), Some(input)) => Some(TrajectoryRenderer::new(input.clone(), rect.w, rect.h)?),
             _ => None,
@@ -389,7 +392,7 @@ fn write_report(
     let mut clips = Vec::with_capacity(req.cameras.len());
     let mut files = vec!["composite.mp4".to_string()];
     for (cam, src) in req.cameras.iter().zip(&comp.sources) {
-        let plan = compose::plan(1, src.size(), false, 1.0, None);
+        let plan = compose::plan(&[src.size()], false, 1.0, None);
         let canvas = Canvas::new(plan.canvas.0, plan.canvas.1);
         let name = format!("{}.mp4", sanitize_file_name(&cam.display_name));
         let writer = Mp4Writer::create(&clips_dir.join(&name), canvas.width as u32, canvas.height as u32, req.fps)?;
