@@ -3,6 +3,7 @@ use eframe::egui;
 use crate::trajectory::EeTrajectory;
 
 /// Orbit camera state for 3D trajectory visualization.
+#[derive(Clone)]
 pub(crate) struct OrbitCamera {
     /// Azimuth angle in radians (horizontal rotation around Y axis).
     pub azimuth: f32,

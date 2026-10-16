@@ -1,7 +1,6 @@
 use eframe::egui;
 
 use crate::app::App;
-use crate::trajectory;
 use crate::trajectory_view::TrajectoryEntry;
 
 impl App {
@@ -43,6 +42,8 @@ impl App {
                         ui.close_menu();
                         self.save_curation();
                     }
+                    ui.separator();
+                    self.show_export_menu_items(ui, ctx);
                     ui.separator();
                     if ui.button("Quit").clicked() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -247,6 +248,11 @@ impl App {
                         }
                     }
                 };
+
+                let mut hints = hints;
+                if self.dataset.is_some() {
+                    hints.push("[Ctrl+C] copy frame");
+                }
 
                 for (i, hint) in hints.iter().enumerate() {
                     if i > 0 {
@@ -1261,14 +1267,9 @@ impl App {
             ui.add_space(4.0);
         }
 
-        let ds = match &self.dataset {
-            Some(ds) => ds,
-            None => return,
-        };
-
-        let arm_idx = self.active_arm_index.min(self.arms.len().saturating_sub(1));
-        let kin = &self.arms[arm_idx].kinematics;
-        let pos_indices = &self.arms[arm_idx].pos_indices;
+        if self.dataset.is_none() {
+            return;
+        }
 
         // Collect episode indices + frames to display
         let (pane_episodes, selected_episodes) = if let Some(grid) = &self.grid_view {
@@ -1292,37 +1293,7 @@ impl App {
 
         // Ensure all trajectories are cached
         for &(ep_idx, _) in &pane_episodes {
-            if self.trajectory_cache.get(ep_idx).is_some() {
-                continue;
-            }
-            let is_v3 = ds.info.codebase_version.starts_with("v3");
-            let ep_meta = ds.episodes.get(ep_idx);
-            let (data_chunk, data_file) = ep_meta
-                .map(|m| (m.data_chunk_index, m.data_file_index))
-                .unwrap_or((0, 0));
-            let parquet_path = trajectory::episode_data_path(
-                &ds.root,
-                ep_idx,
-                ds.info.chunks_size,
-                &ds.info.codebase_version,
-                data_chunk,
-                data_file,
-            );
-            let filter_ep = if is_v3 { Some(ep_idx) } else { None };
-            match trajectory::load_episode_states(&parquet_path, filter_ep) {
-                Ok(states) => {
-                    let traj = kin.compute_trajectory(&states, pos_indices);
-                    log::debug!(
-                        "Computed trajectory for ep {}: {} points",
-                        ep_idx,
-                        traj.positions.len(),
-                    );
-                    self.trajectory_cache.insert(ep_idx, traj);
-                }
-                Err(e) => {
-                    log::warn!("Failed to load trajectory for ep {}: {}", ep_idx, e);
-                }
-            }
+            self.ensure_trajectory_cached(ep_idx);
         }
 
         // Build overlay entries
