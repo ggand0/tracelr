@@ -442,10 +442,10 @@ impl App {
                         let locked = *on && checked == 1;
                         ui.add_enabled(!locked, egui::Checkbox::new(on, names[cam].as_str()));
                         ui.horizontal(|ui| {
-                            if ui.add_enabled(pos > 0, egui::Button::new("\u{25b2}").small()).clicked() {
+                            if arrow_button(ui, true, pos > 0) {
                                 swap = Some((pos, pos - 1));
                             }
-                            if ui.add_enabled(pos < last, egui::Button::new("\u{25bc}").small()).clicked() {
+                            if arrow_button(ui, false, pos < last) {
                                 swap = Some((pos, pos + 1));
                             }
                         });
@@ -467,20 +467,17 @@ impl App {
                 let cells = cameras.len() + usize::from(with_traj);
                 egui::Grid::new("export_options").num_columns(2).show(ui, |ui| {
                     ui.label(egui::RichText::new("Rows").color(muted));
-                    ui.horizontal(|ui| {
-                        ui.selectable_value(&mut state.rows, None, "Auto");
-                        for r in 1..=3 {
-                            ui.add_enabled_ui(r <= cells, |ui| {
-                                ui.selectable_value(&mut state.rows, Some(r), r.to_string());
-                            });
-                        }
-                    });
+                    let rows = [
+                        (None, "Auto", true),
+                        (Some(1), "1", cells >= 1),
+                        (Some(2), "2", cells >= 2),
+                        (Some(3), "3", cells >= 3),
+                    ];
+                    segmented(ui, "export_rows", &mut state.rows, &rows, accent);
                     ui.end_row();
                     ui.label(egui::RichText::new("Scale").color(muted));
-                    ui.horizontal(|ui| {
-                        ui.radio_value(&mut state.half_scale, false, "Full");
-                        ui.radio_value(&mut state.half_scale, true, "Half");
-                    });
+                    let scales = [(false, "Full", true), (true, "Half", true)];
+                    segmented(ui, "export_scale", &mut state.half_scale, &scales, accent);
                     ui.end_row();
                 });
                 ui.add_space(6.0);
@@ -547,6 +544,92 @@ impl App {
         if clip || report {
             ui.close_menu();
             self.open_export_dialog();
+        }
+    }
+}
+
+/// Small button with a painted up/down triangle (the default fonts have no
+/// glyphs for U+25B2 / U+25BC, which render as empty boxes).
+fn arrow_button(ui: &mut egui::Ui, up: bool, enabled: bool) -> bool {
+    let resp = ui.add_enabled(enabled, egui::Button::new("").min_size(egui::vec2(20.0, 18.0)));
+    let color = if enabled {
+        ui.style().interact(&resp).fg_stroke.color
+    } else {
+        ui.visuals().widgets.noninteractive.fg_stroke.color.gamma_multiply(0.35)
+    };
+    let c = resp.rect.center();
+    let (w, h) = (4.5, 3.0);
+    let points = if up {
+        vec![c + egui::vec2(0.0, -h), c + egui::vec2(w, h), c + egui::vec2(-w, h)]
+    } else {
+        vec![c + egui::vec2(-w, -h), c + egui::vec2(w, -h), c + egui::vec2(0.0, h)]
+    };
+    ui.painter()
+        .add(egui::Shape::convex_polygon(points, color, egui::Stroke::NONE));
+    resp.clicked()
+}
+
+/// Pill-shaped segmented control: a rounded track with the selected option
+/// filled in the accent colour. Each option is (value, label, enabled).
+fn segmented<T: PartialEq + Copy>(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    value: &mut T,
+    options: &[(T, &str, bool)],
+    accent: egui::Color32,
+) {
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let pad = egui::vec2(12.0, 3.0);
+    let galleys: Vec<_> = options
+        .iter()
+        .map(|(_, label, _)| {
+            ui.painter()
+                .layout_no_wrap(label.to_string(), font.clone(), egui::Color32::PLACEHOLDER)
+        })
+        .collect();
+    let height = galleys.iter().map(|g| g.size().y).fold(0.0, f32::max) + 2.0 * pad.y;
+    let widths: Vec<f32> = galleys
+        .iter()
+        .map(|g| (g.size().x + 2.0 * pad.x).max(height * 1.4))
+        .collect();
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(widths.iter().sum(), height),
+        egui::Sense::hover(),
+    );
+
+    let visuals = ui.visuals().clone();
+    let painter = ui.painter();
+    let radius = (height / 2.0).round().min(255.0) as u8;
+    painter.rect_filled(rect, egui::CornerRadius::same(radius), visuals.widgets.inactive.bg_fill);
+
+    let base_id = ui.id().with(id_salt);
+    let mut x = rect.min.x;
+    for (i, ((option, _, enabled), galley)) in options.iter().zip(galleys).enumerate() {
+        let seg = egui::Rect::from_min_size(egui::pos2(x, rect.min.y), egui::vec2(widths[i], height));
+        x += widths[i];
+        let sense = if *enabled { egui::Sense::click() } else { egui::Sense::hover() };
+        let resp = ui.interact(seg, base_id.with(i), sense);
+        if *enabled && resp.clicked() {
+            *value = *option;
+        }
+
+        let selected = *value == *option;
+        let pill = seg.shrink(2.0);
+        let pill_radius = egui::CornerRadius::same(radius.saturating_sub(2));
+        let text_color = if selected {
+            painter.rect_filled(pill, pill_radius, accent);
+            egui::Color32::from_gray(15)
+        } else if !*enabled {
+            visuals.widgets.noninteractive.fg_stroke.color.gamma_multiply(0.35)
+        } else {
+            if resp.hovered() {
+                painter.rect_filled(pill, pill_radius, visuals.widgets.hovered.bg_fill);
+            }
+            visuals.widgets.inactive.fg_stroke.color
+        };
+        painter.galley(seg.center() - galley.size() / 2.0, galley, text_color);
+        if *enabled && !selected {
+            resp.on_hover_cursor(egui::CursorIcon::PointingHand);
         }
     }
 }
